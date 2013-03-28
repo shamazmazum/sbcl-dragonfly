@@ -3237,7 +3237,7 @@ located."
    '(:cygwin (:win :windows :mswindows :win32 :mingw32) ;; try cygwin first!
      (:linux :linux :linux-target) ;; for GCL at least, must appear before :bsd
      (:macosx :macosx :darwin :darwin-target :apple) ; also before :bsd
-     (:solaris :solaris :sunos) (:bsd :bsd :freebsd :netbsd :openbsd) :unix
+     (:solaris :solaris :sunos) (:bsd :bsd :freebsd :dragonfly :netbsd :openbsd) :unix
      :genera)))
 
 (defun architecture ()

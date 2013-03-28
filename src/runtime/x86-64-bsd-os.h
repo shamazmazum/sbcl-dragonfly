@@ -5,6 +5,10 @@
 #include <machine/fpu.h>
 #endif
 
+#ifdef LISP_FEATURE_DRAGONFLY
+#include <machine/npx.h>
+#endif
+
 typedef register_t os_context_register_t;
 
 static inline os_context_t *arch_os_get_context(void **void_context)
@@ -16,7 +20,7 @@ static inline os_context_t *arch_os_get_context(void **void_context)
  * store signal context information, but at least they tend to use the
  * same stems to name the structure fields, so by using this macro we
  * can share a fair amount of code between different variants. */
-#if defined __FreeBSD__
+#if defined(__FreeBSD__) || defined(__DragonFly__)
 #define CONTEXT_ADDR_FROM_STEM(stem) &context->uc_mcontext.mc_ ## stem
 #elif defined(__OpenBSD__)
 #define CONTEXT_ADDR_FROM_STEM(stem) &context->sc_ ## stem
@@ -24,6 +28,21 @@ static inline os_context_t *arch_os_get_context(void **void_context)
 #define CONTEXT_ADDR_FROM_STEM(stem) &((context)->uc_mcontext.__gregs[_REG_ ## stem])
 #else
 #error unsupported BSD variant
+#endif
+
+// FIXME: This DragonFly code can be wrong
+#if defined LISP_FEATURE_DRAGONFLY
+#define RESTORE_FP_CONTROL_FROM_CONTEXT
+void os_restore_fp_control(os_context_t *context);
+
+#define X86_64_SIGFPE_FIXUP
+
+static inline unsigned int *
+arch_os_context_mxcsr_addr(os_context_t *context)
+{
+    struct envxmm *ex = (struct envxmm *)(&context->uc_mcontext.mc_fpregs);
+    return &ex->en_mxcsr;
+}
 #endif
 
 #if defined LISP_FEATURE_FREEBSD

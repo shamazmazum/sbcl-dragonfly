@@ -277,6 +277,9 @@ case `uname` in
                 ;;
         esac
         ;;
+    DragonFly)
+	sbcl_os="dragonfly"
+	;;
     Darwin)
         sbcl_os="darwin"
         ;;
@@ -501,6 +504,16 @@ case "$sbcl_os" in
                 exit 1
                 ;;
         esac
+        ;;
+    dragonfly)
+        printf ' :unix' >> $ltf
+        printf ' :bsd' >> $ltf
+        printf ' :elf' >> $ltf
+        printf ' :dragonfly' >> $ltf
+        printf ' :sb-thread' >> $ltf
+        link_or_copy $sbcl_arch-bsd-os.h target-arch-os.h
+        link_or_copy bsd-os.h target-os.h
+        link_or_copy Config.$sbcl_arch-dragonfly Config
         ;;
     darwin)
         printf ' :unix' >> $ltf

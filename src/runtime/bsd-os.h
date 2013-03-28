@@ -9,7 +9,7 @@
  * files for more information.
  */
 
-#ifdef __FreeBSD__
+#if defined(__FreeBSD__) || defined(__DragonFly__)
 #include <osreldate.h>
 #endif
 
@@ -59,6 +59,14 @@ typedef ucontext_t os_context_t;
 extern int sig_memory_fault;
 #define SIG_MEMORY_FAULT (sig_memory_fault)
 
+#define SIG_STOP_FOR_GC (SIGUSR2)
+
+#elif defined __DragonFly__
+
+#include <sys/ucontext.h>
+typedef ucontext_t os_context_t;
+
+#define SIG_MEMORY_FAULT (SIGSEGV)
 #define SIG_STOP_FOR_GC (SIGUSR2)
 
 #elif defined __OpenBSD__

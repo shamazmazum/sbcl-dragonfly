@@ -72,6 +72,10 @@ static void netbsd_init();
 static void freebsd_init();
 #endif /* __FreeBSD__ */
 
+#ifdef __DragonFly__
+#include <sys/sysctl.h>
+#endif
+
 #ifdef __OpenBSD__
 #include <sys/types.h>
 #include <sys/resource.h>
@@ -107,7 +111,7 @@ os_context_sigmask_addr(os_context_t *context)
     /* (Unlike most of the other context fields that we access, the
      * signal mask field is a field of the basic, outermost context
      * struct itself both in FreeBSD 4.0 and in OpenBSD 2.6.) */
-#if defined(__FreeBSD__)  || defined(__NetBSD__) || defined(LISP_FEATURE_DARWIN)
+#if defined(__FreeBSD__)  || defined(__NetBSD__) || defined(LISP_FEATURE_DARWIN) || defined(__DragonFly__)
     return &context->uc_sigmask;
 #elif defined (__OpenBSD__)
     return &context->sc_mask;
@@ -444,6 +448,9 @@ futex_wake(int *lock_word, int n)
 #endif
 #endif /* __FreeBSD__ */
 
+// FIXME: we can try to implement the same thing on DragonFly with umtx_sleep and umtx_wakeup
+// FIXME: but should we anyway?
+
 #ifdef LISP_FEATURE_DARWIN
 /* defined in ppc-darwin-os.c instead */
 #elif defined(LISP_FEATURE_FREEBSD)
@@ -478,6 +485,20 @@ os_get_runtime_executable_path(int external)
         return NULL;
     return copied_string(path);
 }
+#elif defined(LISP_FEATURE_DRAGONFLY)
+char *
+os_get_runtime_executable_path(int external)
+{
+    char path[PATH_MAX + 1];
+    int size = readlink("/proc/curproc/file", path, sizeof(path) - 1);
+    if (size < 0)
+        return NULL;
+    path[size] = '\0';
+
+    if (strcmp(path, "unknown") == 0)
+        return NULL;
+    return copied_string(path);
+}
 #elif defined(LISP_FEATURE_NETBSD) || defined(LISP_FEATURE_OPENBSD)
 char *
 os_get_runtime_executable_path(int external)
@@ -487,7 +508,7 @@ os_get_runtime_executable_path(int external)
         return copied_string("/proc/curproc/file");
     return NULL;
 }
-#else /* Not DARWIN or FREEBSD or NETBSD or OPENBSD */
+#else /* Not DARWIN or FREEBSD or NETBSD or OPENBSD or DragonFly */
 char *
 os_get_runtime_executable_path(int external)
 {
