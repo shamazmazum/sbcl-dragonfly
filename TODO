@@ -104,6 +104,9 @@ DARWIN
   Needs love, particularly threads and exceptions/signals. slam.sh is
   also broken there.
 
+DRAGONFLY
+  Fix sb-concurrency, add x86 support (see TODO.dragonfly)
+
 FUNCTION NAMES
 
   We'd like to be able to (SETF %FUNCTION-NAME) on a closure.

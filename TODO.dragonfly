@@ -1,0 +1,13 @@
+There are some thing I am unsure about:
+1. DragonFlyBSD related:
+ 1.1 Do we need :gcc-tls feature in sbcl? Wikipedia states that
+     DragonFly has native TLS support. (Seems to be working without :gcc-tls)
+ 2.2 How 1:1 multithreading can be used? Wikipedia states that DragonFly supports this model.
+     Should we used pthread?
+
+Things to do:
+1. Add x86 support.
+2. SBCL crashes(!) when sb-concurrency tests is run. Do something about it.
+3. pkgsrc package would be nice. Of course, this is not related directly to SBCL, but I see no reason, why it
+   cannot be here.
+
