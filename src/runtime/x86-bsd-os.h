@@ -1,7 +1,7 @@
 #ifndef _X86_BSD_OS_H
 #define _X86_BSD_OS_H
 
-#ifdef LISP_FEATURE_FREEBSD
+#if defined(LISP_FEATURE_FREEBSD) || defined(LISP_FEATURE_DRAGONFLY)
 #include <machine/segments.h>
 #include <machine/cpufunc.h>
 #endif
@@ -17,7 +17,7 @@ static inline os_context_t *arch_os_get_context(void **void_context)
  * store signal context information, but at least they tend to use the
  * same stems to name the structure fields, so by using this macro we
  * can share a fair amount of code between different variants. */
-#if defined __FreeBSD__
+#if defined(__FreeBSD__) || defined(__DragonFly__)
 #define CONTEXT_ADDR_FROM_STEM(stem) &context->uc_mcontext.mc_ ## stem
 #elif defined(__OpenBSD__)
 #define CONTEXT_ADDR_FROM_STEM(stem) &context->sc_ ## stem
@@ -35,7 +35,7 @@ void os_restore_tls_segment_register(os_context_t *context);
 void os_restore_fp_control(os_context_t *context);
 #endif
 
-#if defined LISP_FEATURE_OPENBSD
+#if defined(LISP_FEATURE_OPENBSD) || defined(LISP_FEATURE_DRAGONFLY)
 #define RESTORE_FP_CONTROL_FROM_CONTEXT
 void os_restore_fp_control(os_context_t *context);
 #endif

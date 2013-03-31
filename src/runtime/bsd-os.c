@@ -74,7 +74,9 @@ static void freebsd_init();
 
 #ifdef __DragonFly__
 #include <sys/sysctl.h>
-#endif
+
+static void dragonfly_init();
+#endif /* __DragonFly__ */
 
 #ifdef __OpenBSD__
 #include <sys/types.h>
@@ -102,6 +104,8 @@ os_init(char *argv[], char *envp[])
     openbsd_init();
 #elif defined(LISP_FEATURE_DARWIN)
     darwin_init();
+#elif defined(__DragonFly__)
+    dragonfly_init();
 #endif
 }
 
@@ -448,6 +452,22 @@ futex_wake(int *lock_word, int n)
 #endif
 #endif /* __FreeBSD__ */
 
+#ifdef __DragonFly__
+static void dragonfly_init()
+{
+#ifdef LISP_FEATURE_X86
+    size_t len;
+    int instruction_sse;
+    
+    len = sizeof(instruction_sse);
+    if (sysctlbyname("hw.instruction_sse", &instruction_sse, &len,
+                     NULL, 0) == 0 && instruction_sse != 0) {
+        /* Use the SSE detector */
+        fast_bzero_pointer = fast_bzero_detect;
+    }
+#endif /* LISP_FEATURE_X86 */
+}
+#endif /* __DragonFly__ */
 // FIXME: we can try to implement the same thing on DragonFly with umtx_sleep and umtx_wakeup
 // FIXME: but should we anyway?
 
