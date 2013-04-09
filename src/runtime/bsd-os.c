@@ -467,6 +467,43 @@ static void dragonfly_init()
     }
 #endif /* LISP_FEATURE_X86 */
 }
+
+
+#if defined(LISP_FEATURE_SB_THREAD) && defined(LISP_FEATURE_SB_FUTEX) \
+    && !defined(LISP_FEATURE_SB_PTHREAD_FUTEX)
+int
+futex_wait(int *lock_word, long oldval, long sec, unsigned long usec)
+{
+    int ret;
+
+    if (sec < 0)
+        ret = umtx_sleep(lock_word, oldval, 0);
+    else {
+        int count = usec + 1000000 * sec;
+        ret = umtx_sleep(lock_word, oldval, count);
+    }
+
+    if (ret == 0) return 0;
+    else
+    {
+        switch (errno)
+        {
+        case EWOULDBLOCK: // Operation timed out
+            return 1;
+        case EINTR:
+            return 2;
+        default: // Such as EINVAL or EBUSY
+            return -1;
+        }
+    }
+}
+
+int
+futex_wake(int *lock_word, int n)
+{
+    return umtx_wakeup(lock_word, n);
+}
+#endif
 #endif /* __DragonFly__ */
 // FIXME: we can try to implement the same thing on DragonFly with umtx_sleep and umtx_wakeup
 // FIXME: but should we anyway?

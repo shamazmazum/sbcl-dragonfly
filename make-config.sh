@@ -388,7 +388,8 @@ then
     # If --fancy, enable threads on platforms where they can be built.
     case $sbcl_arch in
         x86|x86-64|ppc)
-	    if [ "$sbcl_os" = "sunos" ] && [ "$sbcl_arch" = "x86-64" ]
+	    if ([ "$sbcl_os" = "sunos" ] && [ "$sbcl_arch" = "x86-64" ]) || \
+               ([ "$sbcl_os" = "dragonfly" ] && [ "$sbcl_arch" = "x86" ])
 	    then
 		echo "No threads on this platform."
 	    else
@@ -510,9 +511,7 @@ case "$sbcl_os" in
         printf ' :bsd' >> $ltf
         printf ' :elf' >> $ltf
         printf ' :dragonfly' >> $ltf
-        if [ $sbcl_arch = "x86-64" ]; then
-            printf ' :sb-thread' >> $ltf
-        fi
+        printf ' :sb-qshow' >> $ltf
         link_or_copy $sbcl_arch-bsd-os.h target-arch-os.h
         link_or_copy bsd-os.h target-os.h
         link_or_copy Config.$sbcl_arch-dragonfly Config
