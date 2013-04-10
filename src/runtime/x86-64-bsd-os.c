@@ -172,7 +172,6 @@ int arch_os_thread_cleanup(struct thread *thread) {
     return 1;                  /* success */
 }
 
-// FIXME: This DragonFly code can be wrong
 #if defined(LISP_FEATURE_DRAGONFLY)
 void
 os_restore_fp_control(os_context_t *context)

@@ -484,10 +484,8 @@ futex_wait(int *lock_word, long oldval, long sec, unsigned long usec)
     }
 
     if (ret == 0) return 0;
-    else
-    {
-        switch (errno)
-        {
+    else {
+        switch (errno) {
         case EWOULDBLOCK: // Operation timed out
             return 1;
         case EINTR:
@@ -505,8 +503,6 @@ futex_wake(int *lock_word, int n)
 }
 #endif
 #endif /* __DragonFly__ */
-// FIXME: we can try to implement the same thing on DragonFly with umtx_sleep and umtx_wakeup
-// FIXME: but should we anyway?
 
 #ifdef LISP_FEATURE_DARWIN
 /* defined in ppc-darwin-os.c instead */

@@ -105,7 +105,7 @@ DARWIN
   also broken there.
 
 DRAGONFLY
-  Fix sb-concurrency, add x86 support (see TODO.dragonfly)
+  Fix multithreading support on x86-64, add it on x86.
 
 FUNCTION NAMES
 

@@ -264,7 +264,6 @@ os_restore_fp_control(os_context_t *context)
 }
 #endif
 
-// FIXME: Should we do this?
 #if defined(LISP_FEATURE_DRAGONFLY)
 void os_restore_fp_control (os_context_t *context)
 {

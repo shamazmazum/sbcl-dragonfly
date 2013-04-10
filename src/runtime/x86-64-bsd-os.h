@@ -30,7 +30,6 @@ static inline os_context_t *arch_os_get_context(void **void_context)
 #error unsupported BSD variant
 #endif
 
-// FIXME: This DragonFly code can be wrong
 #if defined LISP_FEATURE_DRAGONFLY
 #define RESTORE_FP_CONTROL_FROM_CONTEXT
 void os_restore_fp_control(os_context_t *context);
