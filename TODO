@@ -104,6 +104,9 @@ DARWIN
   Needs love, particularly threads and exceptions/signals. slam.sh is
   also broken there.
 
+DRAGONFLY
+  Fix multithreading support on x86-64, add it on x86.
+
 FUNCTION NAMES
 
   We'd like to be able to (SETF %FUNCTION-NAME) on a closure.

@@ -279,7 +279,7 @@ again:
          * emulate this behaviour. */
         sigpending(&pendset);
         for (i = 1; i < NSIG; i++) {
-            if (sigismember(&pendset, i) && sigismember(&newset, i)) {
+            if (sigismember(&pendset, i) && sigismember(&oldset, i)) {
                 result = EINTR;
                 goto done;
             }
