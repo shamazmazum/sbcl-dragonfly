@@ -171,6 +171,25 @@ arch_os_load_ldt(struct thread *thread)
 }
 #endif
 
+#if defined(LISP_FEATURE_SB_THREAD) && defined(LISP_FEATURE_DRAGONFLY)
+static int alloc_ldt (union descriptor *ldt_entry)
+{
+    struct segment_descriptor tmp;
+    int i;
+    for (i=0; i<16; i++)
+    {
+        tmp.sd_lolimit = 0;
+        tmp.sd_hilimit = 0;
+        i386_get_ldt (i, (union descriptor*) &tmp, 1);
+        if ((tmp.sd_lolimit == 0) && (tmp.sd_hilimit == 0)) \
+            return i386_set_ldt (i, ldt_entry, 1);
+    }
+    perror ("alloc_ldt");
+    lose ("Cannot allocate LDT entry\n");
+    return -1;
+}
+#endif
+
 int arch_os_thread_init(struct thread *thread) {
 
 #ifdef LISP_FEATURE_SB_THREAD
@@ -182,7 +201,11 @@ int arch_os_thread_init(struct thread *thread) {
     set_data_desc_addr(&ldt_entry, thread);
     set_data_desc_size(&ldt_entry, dynamic_values_bytes);
 
+#ifdef LISP_FEATURE_DRAGONFLY
+    n = alloc_ldt ((union descriptor*) &ldt_entry);
+#else
     n = i386_set_ldt(LDT_AUTO_ALLOC, (union descriptor*) &ldt_entry, 1);
+#endif
     if (n < 0) {
         perror("i386_set_ldt");
         lose("unexpected i386_set_ldt(..) failure\n");
@@ -228,7 +251,9 @@ int arch_os_thread_cleanup(struct thread *thread) {
     FSHOW_SIGNAL((stderr, "/ TLS: Freeing LDT %x\n", n));
 
     __asm__ __volatile__ ("mov %0, %%fs" : : "r"(0));
+#ifndef LISP_FEATURE_DRAGONFLY
     i386_set_ldt(n, NULL, 1);
+#endif
 #endif
 
     return 1;                  /* success */

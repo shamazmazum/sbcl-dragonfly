@@ -105,7 +105,8 @@ DARWIN
   also broken there.
 
 DRAGONFLY
-  Fix multithreading support on x86-64, add it on x86.
+  SBCL often crashes with Illegal Instruction when mutithreading is in use.
+  Need to fix it.
 
 FUNCTION NAMES
 
