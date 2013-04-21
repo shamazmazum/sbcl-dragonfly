@@ -31,6 +31,10 @@ static inline os_context_t *arch_os_get_context(void **void_context)
 #endif
 
 #if defined LISP_FEATURE_DRAGONFLY
+/* I am not sure if following definition is needed after this:
+   http://gitweb.dragonflybsd.org/dragonfly.git/commit/e6e019a801e99ba7888ed009c5c3b3c7b047af1e
+
+   But It will not harm if I leave it here. */
 #define RESTORE_FP_CONTROL_FROM_CONTEXT
 void os_restore_fp_control(os_context_t *context);
 
