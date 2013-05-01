@@ -512,6 +512,9 @@ case "$sbcl_os" in
         printf ' :elf' >> $ltf
         printf ' :dragonfly' >> $ltf
         printf ' :sb-qshow' >> $ltf
+        if [ $sbcl_arch = "x86" ]; then
+            printf ' :restore-fs-segment-register-from-tls' >> $ltf
+        fi
         link_or_copy $sbcl_arch-bsd-os.h target-arch-os.h
         link_or_copy bsd-os.h target-os.h
         link_or_copy Config.$sbcl_arch-dragonfly Config
