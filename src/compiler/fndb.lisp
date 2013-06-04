@@ -367,6 +367,10 @@
 (defknown logbitp (unsigned-byte integer) boolean (movable foldable flushable))
 (defknown ash (integer integer) integer
   (movable foldable flushable explicit-check))
+#!+ash-right-vops
+(defknown %ash/right ((or word sb!vm:signed-word) (mod #.sb!vm:n-word-bits))
+    (or word sb!vm:signed-word)
+    (movable foldable flushable always-translatable))
 (defknown (logcount integer-length) (integer) bit-index
   (movable foldable flushable explicit-check))
 ;;; FIXME: According to the ANSI spec, it's legal to use any
@@ -703,9 +707,19 @@
 (defknown make-list (index &key (:initial-element t)) list
   (movable flushable))
 
+(defknown sb!impl::backq-list (&rest t) list (movable flushable))
+(defknown sb!impl::backq-list* (t &rest t) t (movable flushable))
+(defknown sb!impl::backq-append (&rest t) t (flushable))
+(defknown sb!impl::backq-nconc (&rest t) t ()
+  :destroyed-constant-args (remove-non-constants-and-nils #'butlast))
+(defknown sb!impl::backq-cons (t t) cons (foldable movable flushable))
+(defknown sb!impl::backq-vector (list) simple-vector
+    (foldable movable flushable))
+
 ;;; All but last must be of type LIST, but there seems to be no way to
 ;;; express that in this syntax.
 (defknown append (&rest t) t (flushable))
+(defknown sb!impl::append2 (list t) t (flushable))
 
 (defknown copy-list (list) list (flushable))
 (defknown copy-alist (list) list (flushable))

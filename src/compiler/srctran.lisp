@@ -134,6 +134,11 @@
     (1 `(cons ,(first args) nil))
     (t (values nil t))))
 
+(defoptimizer (list derive-type) ((&rest args) node)
+  (if args
+      (specifier-type 'cons)
+      (specifier-type 'null)))
+
 ;;; And similarly for LIST*.
 (define-source-transform list* (arg &rest others)
   (cond ((not others) arg)
@@ -144,6 +149,78 @@
   (if args
       (specifier-type 'cons)
       (lvar-type arg)))
+
+;;;
+
+(define-source-transform nconc (&rest args)
+  (case (length args)
+    (0 ())
+    (1 (car args))
+    (t (values nil t))))
+
+;;; (append nil nil nil fixnum) => fixnum
+;;; (append x x cons x x) => cons
+;;; (append x x x x list) => list
+;;; (append x x x x sequence) => sequence
+;;; (append fixnum x ...) => nil
+(defun derive-append-type (args)
+  (cond ((not args)
+         (specifier-type 'null))
+        (t
+         (let ((cons-type (specifier-type 'cons))
+               (null-type (specifier-type 'null))
+               (list-type (specifier-type 'list))
+               (last (lvar-type (car (last args)))))
+           (or
+            ;; Check that all but the last arguments are lists first
+            (loop for (arg next) on args
+                  while next
+                  do
+                  (let ((lvar-type (lvar-type arg)))
+                    (unless (or (csubtypep list-type lvar-type)
+                                (csubtypep lvar-type list-type)
+                                ;; Check for NIL specifically, because
+                                ;; SYMBOL or ATOM won't satisfie the above
+                                (csubtypep null-type lvar-type))
+                      (assert-lvar-type arg list-type
+                                        (lexenv-policy *lexenv*))
+                      (return *empty-type*))))
+            (loop with all-nil = t
+                  for (arg next) on args
+                  for lvar-type = (lvar-type arg)
+                  while next
+                  do
+                  (cond
+                    ;; Cons in the middle guarantees the result will be a cons
+                    ((csubtypep lvar-type cons-type)
+                     (return cons-type))
+                    ;; If all but the last are NIL the type of the last arg
+                    ;; can be used
+                    ((csubtypep lvar-type null-type))
+                    (all-nil
+                     (setf all-nil nil)))
+                  finally
+                  (return
+                    (cond (all-nil
+                           last)
+                          ((csubtypep last cons-type)
+                           cons-type)
+                          ((csubtypep last list-type)
+                           list-type)
+                          ;; If the last is SEQUENCE (or similar) it'll
+                          ;; be either that sequence or a cons, which is a
+                          ;; sequence
+                          ((csubtypep list-type last)
+                           last)))))))))
+
+(defoptimizer (append derive-type) ((&rest args))
+  (derive-append-type args))
+
+(defoptimizer (sb!impl::append2 derive-type) ((&rest args))
+  (derive-append-type args))
+
+(defoptimizer (nconc derive-type) ((&rest args))
+  (derive-append-type args))
 
 ;;; Translate RPLACx to LET and SETF.
 (define-source-transform rplaca (x y)
@@ -236,8 +313,24 @@
 ;;; on the argument types), but we make it a regular transform so that
 ;;; the VM has a chance to see the bare LOGTEST and potentiall choose
 ;;; to implement it differently.  --njf, 06-02-2006
-(deftransform logtest ((x y) * *)
-  `(not (zerop (logand x y))))
+;;;
+;;; Other transforms may be useful even with direct LOGTEST VOPs; let
+;;; them fire (including the type-directed constant folding below), but
+;;; disable the inlining rewrite in such cases. -- PK, 2013-05-20
+(deftransform logtest ((x y) * * :node node)
+  (let ((type (two-arg-derive-type x y
+                                   #'logand-derive-type-aux
+                                   #'logand)))
+    (multiple-value-bind (typep definitely)
+        (ctypep 0 type)
+      (cond ((and (not typep) definitely)
+             t)
+            ((type= type (specifier-type '(eql 0)))
+             nil)
+            ((neq :default (combination-implementation-style node))
+             (give-up-ir1-transform))
+            (t
+             `(not (zerop (logand x y))))))))
 
 (deftransform logbitp
     ((index integer) (unsigned-byte (or (signed-byte #.sb!vm:n-word-bits)
@@ -2686,7 +2779,88 @@
               (specifier-type `(signed-byte ,size-high))
               *universal-type*))
         *universal-type*)))
+
+;;; Rightward ASH
+#!+ash-right-vops
+(progn
+  (defun %ash/right (integer amount)
+    (ash integer (- amount)))
 
+  (deftransform ash ((integer amount) (sb!vm:signed-word (integer * 0)))
+    "Convert ASH of signed word to %ASH/RIGHT"
+    (when (constant-lvar-p amount)
+      (give-up-ir1-transform))
+    (let ((use (lvar-uses amount)))
+      (cond ((and (combination-p use)
+                  (eql '%negate (lvar-fun-name (combination-fun use))))
+             (splice-fun-args amount '%negate 1)
+             `(lambda (integer amount)
+                (declare (type unsigned-byte amount))
+                (%ash/right integer (if (>= amount ,sb!vm:n-word-bits)
+                                        ,(1- sb!vm:n-word-bits)
+                                        amount))))
+            (t
+             `(%ash/right integer (if (<= amount ,(- sb!vm:n-word-bits))
+                                      ,(1- sb!vm:n-word-bits)
+                                      (- amount)))))))
+
+  (deftransform ash ((integer amount) (word (integer * 0)))
+    "Convert ASH of word to %ASH/RIGHT"
+    (when (constant-lvar-p amount)
+      (give-up-ir1-transform))
+    (let ((use (lvar-uses amount)))
+      (cond ((and (combination-p use)
+                  (eql '%negate (lvar-fun-name (combination-fun use))))
+             (splice-fun-args amount '%negate 1)
+             `(lambda (integer amount)
+                (declare (type unsigned-byte amount))
+                (if (>= amount ,sb!vm:n-word-bits)
+                    0
+                    (%ash/right integer amount))))
+            (t
+             `(if (<= amount ,(- sb!vm:n-word-bits))
+                  0
+                  (%ash/right integer (- amount)))))))
+
+  (deftransform %ash/right ((integer amount) (integer (constant-arg unsigned-byte)))
+    "Convert %ASH/RIGHT by constant back to ASH"
+    `(ash integer ,(- (lvar-value amount))))
+
+  (deftransform %ash/right ((integer amount) * * :node node)
+    "strength reduce large variable right shift"
+    (let ((return-type (single-value-type (node-derived-type node))))
+      (cond ((type= return-type (specifier-type '(eql 0)))
+             0)
+            ((type= return-type (specifier-type '(eql -1)))
+             -1)
+            ((csubtypep return-type (specifier-type '(member -1 0)))
+             `(ash integer ,(- sb!vm:n-word-bits)))
+            (t
+             (give-up-ir1-transform)))))
+
+  (defun %ash/right-derive-type-aux (n-type shift same-arg)
+    (declare (ignore same-arg))
+    (or (and (or (csubtypep n-type (specifier-type 'sb!vm:signed-word))
+                 (csubtypep n-type (specifier-type 'word)))
+             (csubtypep shift (specifier-type `(mod ,sb!vm:n-word-bits)))
+             (let ((n-low (numeric-type-low n-type))
+                   (n-high (numeric-type-high n-type))
+                   (s-low (numeric-type-low shift))
+                   (s-high (numeric-type-high shift)))
+               (make-numeric-type :class 'integer :complexp :real
+                                  :low (when n-low
+                                         (if (minusp n-low)
+                                             (ash n-low (- s-low))
+                                             (ash n-low (- s-high))))
+                                  :high (when n-high
+                                          (if (minusp n-high)
+                                              (ash n-high (- s-high))
+                                              (ash n-high (- s-low)))))))
+        *universal-type*))
+
+  (defoptimizer (%ash/right derive-type) ((n shift))
+    (two-arg-derive-type n shift #'%ash/right-derive-type-aux #'%ash/right))
+  )
 
 ;;; Modular functions
 
@@ -2752,53 +2926,80 @@
                (setf (block-reoptimize (node-block node)) t)
                (reoptimize-component (node-component node) :maybe))
              (cut-node (node &aux did-something)
-               (when (and (not (block-delete-p (node-block node)))
-                          (ref-p node)
-                          (constant-p (ref-leaf node)))
-                 (let* ((constant-value (constant-value (ref-leaf node)))
-                        (new-value (if signedp
-                                       (mask-signed-field width constant-value)
-                                       (ldb (byte width 0) constant-value))))
-                   (unless (= constant-value new-value)
-                     (change-ref-leaf node (make-constant new-value))
-                     (let ((lvar (node-lvar node)))
-                       (setf (lvar-%derived-type lvar)
-                             (and (lvar-has-single-use-p lvar)
-                                  (make-values-type :required (list (ctype-of new-value))))))
-                     (setf (block-reoptimize (node-block node)) t)
-                     (reoptimize-component (node-component node) :maybe)
-                     (return-from cut-node t))))
-               (when (and (not (block-delete-p (node-block node)))
-                          (combination-p node)
-                          (eq (basic-combination-kind node) :known))
-                 (let* ((fun-ref (lvar-use (combination-fun node)))
-                        (fun-name (leaf-source-name (ref-leaf fun-ref)))
-                        (modular-fun (find-modular-version fun-name kind signedp width)))
-                   (when (and modular-fun
-                              (not (and (eq fun-name 'logand)
-                                        (csubtypep
-                                         (single-value-type (node-derived-type node))
-                                         type))))
-                     (binding* ((name (etypecase modular-fun
-                                        ((eql :good) fun-name)
-                                        (modular-fun-info
-                                         (modular-fun-info-name modular-fun))
-                                        (function
-                                         (funcall modular-fun node width)))
-                                      :exit-if-null))
-                               (unless (eql modular-fun :good)
-                                 (setq did-something t)
-                                 (change-ref-leaf
-                                  fun-ref
-                                  (find-free-fun name "in a strange place"))
-                                 (setf (combination-kind node) :full))
-                               (unless (functionp modular-fun)
-                                 (dolist (arg (basic-combination-args node))
-                                   (when (cut-lvar arg)
-                                     (setq did-something t))))
-                               (when did-something
-                                 (reoptimize-node node name))
-                               did-something)))))
+               (when (block-delete-p (node-block node))
+                 (return-from cut-node))
+               (typecase node
+                 (ref
+                  (typecase (ref-leaf node)
+                    (constant
+                     (let* ((constant-value (constant-value (ref-leaf node)))
+                            (new-value (if signedp
+                                           (mask-signed-field width constant-value)
+                                           (ldb (byte width 0) constant-value))))
+                       (unless (= constant-value new-value)
+                         (change-ref-leaf node (make-constant new-value)
+                                          :recklessly t)
+                         (let ((lvar (node-lvar node)))
+                           (setf (lvar-%derived-type lvar)
+                                 (and (lvar-has-single-use-p lvar)
+                                      (make-values-type :required (list (ctype-of new-value))))))
+                         (setf (block-reoptimize (node-block node)) t)
+                         (reoptimize-component (node-component node) :maybe)
+                         t)))
+                    (lambda-var
+                     (binding* ((dest (lvar-dest lvar) :exit-if-null)
+                                (nil  (combination-p dest) :exit-if-null)
+                                (name (lvar-fun-name (combination-fun dest))))
+                       ;; we're about to insert an m-s-f/logand between a ref to
+                       ;; a variable and another m-s-f/logand. No point in doing
+                       ;; that; the parent m-s-f/logand was already cut to width
+                       ;; anyway.
+                       (unless (or (cond (signedp
+                                          (and (eql name 'mask-signed-field)
+                                               (eql lvar (second
+                                                          (combination-args
+                                                           dest)))))
+                                         (t
+                                          (eql name 'logand)))
+                                   (csubtypep (lvar-type lvar) type))
+                         (filter-lvar lvar
+                                      (if signedp
+                                          `(mask-signed-field ,width 'dummy)
+                                          `(logand 'dummy ,(ldb (byte width 0) -1))))
+                         (setf (block-reoptimize (node-block node)) t)
+                         (reoptimize-component (node-component node) :maybe)
+                         t)))))
+                 (combination
+                  (when (eq (basic-combination-kind node) :known)
+                    (let* ((fun-ref (lvar-use (combination-fun node)))
+                           (fun-name (lvar-fun-name (combination-fun node)))
+                           (modular-fun (find-modular-version fun-name kind
+                                                              signedp width)))
+                      (when (and modular-fun
+                                 (not (and (eq fun-name 'logand)
+                                           (csubtypep
+                                            (single-value-type (node-derived-type node))
+                                            type))))
+                        (binding* ((name (etypecase modular-fun
+                                           ((eql :good) fun-name)
+                                           (modular-fun-info
+                                            (modular-fun-info-name modular-fun))
+                                           (function
+                                            (funcall modular-fun node width)))
+                                         :exit-if-null))
+                          (unless (eql modular-fun :good)
+                            (setq did-something t)
+                            (change-ref-leaf
+                             fun-ref
+                             (find-free-fun name "in a strange place"))
+                            (setf (combination-kind node) :full))
+                          (unless (functionp modular-fun)
+                            (dolist (arg (basic-combination-args node))
+                              (when (cut-lvar arg)
+                                (setq did-something t))))
+                          (when did-something
+                            (reoptimize-node node name))
+                          did-something)))))))
              (cut-lvar (lvar &aux did-something)
                (do-uses (node lvar)
                  (when (cut-node node)
@@ -2885,11 +3086,11 @@
   (if (and (constant-lvar-p x)
            (not (constant-lvar-p y)))
       `(,(lvar-fun-name (basic-combination-fun node))
-        y
+        (truly-the ,(lvar-type y) y)
         ,(lvar-value x))
       (give-up-ir1-transform)))
 
-(dolist (x '(= char= + * logior logand logxor))
+(dolist (x '(= char= + * logior logand logxor logtest))
   (%deftransform x '(function * *) #'commutative-arg-swap
                  "place constant arg last"))
 
@@ -3165,6 +3366,60 @@
       (give-up-ir1-transform))
     'x))
 
+;;; Pick off easy association opportunities for constant folding.
+;;; More complicated stuff that also depends on commutativity
+;;; (e.g. (f (f x k1) (f y k2)) => (f (f x y) (f k1 k2))) should
+;;; probably be handled with a more general tree-rewriting pass.
+(macrolet ((def (operator &key (type 'integer) (folded operator))
+             `(deftransform ,operator ((x z) (,type (constant-arg ,type)))
+                ,(format nil "associate ~A/~A of constants"
+                         operator folded)
+                (binding* ((node  (if (lvar-has-single-use-p x)
+                                      (lvar-use x)
+                                      (give-up-ir1-transform)))
+                           (nil (or (and (combination-p node)
+                                         (eq (lvar-fun-name
+                                              (combination-fun node))
+                                             ',folded))
+                                    (give-up-ir1-transform)))
+                           (y   (second (combination-args node)))
+                           (nil (or (constant-lvar-p y)
+                                    (give-up-ir1-transform)))
+                           (y   (lvar-value y)))
+                  (unless (typep y ',type)
+                    (give-up-ir1-transform))
+                  (splice-fun-args x ',folded 2)
+                  `(lambda (x y z)
+                     (declare (ignore y z))
+                     (,',operator x ',(,folded y (lvar-value z))))))))
+  (def logand)
+  (def logior)
+  (def logxor)
+  (def logtest :folded logand)
+  (def + :type rational)
+  (def * :type rational))
+
+(deftransform mask-signed-field ((width x) ((constant-arg unsigned-byte) *))
+  "Fold mask-signed-field/mask-signed-field of constant width"
+  (binding* ((node  (if (lvar-has-single-use-p x)
+                        (lvar-use x)
+                        (give-up-ir1-transform)))
+             (nil (or (combination-p node)
+                      (give-up-ir1-transform)))
+             (nil (or (eq (lvar-fun-name (combination-fun node))
+                          'mask-signed-field)
+                      (give-up-ir1-transform)))
+             (x-width (first (combination-args node)))
+             (nil (or (constant-lvar-p x-width)
+                      (give-up-ir1-transform)))
+             (x-width (lvar-value x-width)))
+    (unless (typep x-width 'unsigned-byte)
+      (give-up-ir1-transform))
+    (splice-fun-args x 'mask-signed-field 2)
+    `(lambda (width x-width x)
+       (declare (ignore width x-width))
+       (mask-signed-field ,(min (lvar-value width) x-width) x))))
+
 ;;; These are restricted to rationals, because (- 0 0.0) is 0.0, not -0.0, and
 ;;; (* 0 -4.0) is -0.0.
 (deftransform - ((x y) ((constant-arg (member 0)) rational) *)
@@ -3173,6 +3428,25 @@
 (deftransform * ((x y) (rational (constant-arg (member 0))) *)
   "convert (* x 0) to 0"
   0)
+
+(deftransform %negate ((x) (rational))
+  "Eliminate %negate/%negate of rationals"
+  (splice-fun-args x '%negate 1)
+  '(the rational x))
+
+(deftransform %negate ((x) (number))
+  "Combine %negate/*"
+  (let ((use (lvar-uses x))
+        arg)
+    (unless (and (combination-p use)
+                 (eql '* (lvar-fun-name (combination-fun use)))
+                 (constant-lvar-p (setf arg (second (combination-args use))))
+                 (numberp (setf arg (lvar-value arg))))
+      (give-up-ir1-transform))
+    (splice-fun-args x '* 2)
+    `(lambda (x y)
+       (declare (ignore y))
+       (* x ,(- arg)))))
 
 ;;; Return T if in an arithmetic op including lvars X and Y, the
 ;;; result type is not affected by the type of X. That is, Y is at
@@ -3416,10 +3690,10 @@
         ((and (csubtypep x-type char-type)
               (csubtypep y-type char-type))
          '(char= x y))
-        ((or (fixnum-type-p x-type) (fixnum-type-p y-type))
-         (commutative-arg-swap node))
         ((or (eq-comparable-type-p x-type) (eq-comparable-type-p y-type))
-         '(eq x y))
+         (if (and (constant-lvar-p x) (not (constant-lvar-p y)))
+             '(eq y x)
+             '(eq x y)))
         ((and (not (constant-lvar-p y))
               (or (constant-lvar-p x)
                   (and (csubtypep x-type y-type)

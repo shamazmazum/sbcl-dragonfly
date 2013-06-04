@@ -157,28 +157,31 @@
       (functional
        (ir2-convert-closure node block leaf res))
       (global-var
-       (let ((unsafe (policy node (zerop safety)))
-             (name (leaf-source-name leaf)))
-         (ecase (global-var-kind leaf)
-           ((:special :unknown)
-            (aver (symbolp name))
-            (let ((name-tn (emit-constant name)))
-              (if (or unsafe (info :variable :always-bound name))
-                  (vop fast-symbol-value node block name-tn res)
-                  (vop symbol-value node block name-tn res))))
-           (:global
-            (aver (symbolp name))
-            (let ((name-tn (emit-constant name)))
-              (if (or unsafe (info :variable :always-bound name))
-                  (vop fast-symbol-global-value node block name-tn res)
-                  (vop symbol-global-value node block name-tn res))))
-           (:global-function
-            (let ((fdefn-tn (make-load-time-constant-tn :fdefinition name)))
-              (if unsafe
-                  (vop fdefn-fun node block fdefn-tn res)
-                  (vop safe-fdefn-fun node block fdefn-tn res))))))))
+       (ir2-convert-global-var node block leaf res)))
     (move-lvar-result node block locs lvar))
   (values))
+
+(defun ir2-convert-global-var (node block leaf res)
+  (let ((unsafe (policy node (zerop safety)))
+        (name (leaf-source-name leaf)))
+    (ecase (global-var-kind leaf)
+      ((:special :unknown)
+       (aver (symbolp name))
+       (let ((name-tn (emit-constant name)))
+         (if (or unsafe (info :variable :always-bound name))
+             (vop fast-symbol-value node block name-tn res)
+             (vop symbol-value node block name-tn res))))
+      (:global
+       (aver (symbolp name))
+       (let ((name-tn (emit-constant name)))
+         (if (or unsafe (info :variable :always-bound name))
+             (vop fast-symbol-global-value node block name-tn res)
+             (vop symbol-global-value node block name-tn res))))
+      (:global-function
+       (let ((fdefn-tn (make-load-time-constant-tn :fdefinition name)))
+         (if unsafe
+             (vop fdefn-fun node block fdefn-tn res)
+             (vop safe-fdefn-fun node block fdefn-tn res)))))))
 
 ;;; some sanity checks for a CLAMBDA passed to IR2-CONVERT-CLOSURE
 (defun assertions-on-ir2-converted-clambda (clambda)
@@ -244,13 +247,23 @@
                     (physenv-closure (get-lambda-physenv functional)))
                    (functional
                     (aver (eq (functional-kind functional) :toplevel-xep))
-                    nil))))
-
+                    nil)))
+        global-var)
     (cond (closure
            (let* ((physenv (node-physenv ref))
                   (tn (find-in-physenv functional physenv)))
              (emit-move ref ir2-block tn res)))
+          ;; we're about to emit a reference to a "closure" that's actually
+          ;; an inlinable global function.
+          ((and (global-var-p (setf global-var
+                                    (functional-inline-expanded functional)))
+                (eq :global-function (global-var-kind global-var)))
+           (ir2-convert-global-var ref ir2-block global-var res))
           (t
+           ;; if we're here, we should have either a toplevel-xep (some
+           ;; global scope function in a different component) or an external
+           ;; reference to the "closure"'s body.
+           (aver (memq (functional-kind functional) '(:external :toplevel-xep)))
            (let ((entry (make-load-time-constant-tn :entry functional)))
              (emit-move ref ir2-block entry res)))))
   (values))
@@ -1766,6 +1779,46 @@
   (def list)
   (def list*))
 
+
+(defoptimizer (mask-signed-field ir2-convert) ((width x) node block)
+  (block nil
+    (when (constant-lvar-p width)
+      (case (lvar-value width)
+        (#.(- sb!vm:n-word-bits sb!vm:n-fixnum-tag-bits)
+         (when (or (csubtypep (lvar-type x)
+                              (specifier-type 'word))
+                   (csubtypep (lvar-type x)
+                              (specifier-type 'sb!vm:signed-word)))
+           (let* ((lvar (node-lvar node))
+                  (temp (make-normal-tn
+                         (if (csubtypep (lvar-type x)
+                                        (specifier-type 'word))
+                             (primitive-type-of most-positive-word)
+                             (primitive-type-of
+                              (- (ash most-positive-word -1))))))
+                  (results (lvar-result-tns
+                            lvar
+                            (list (primitive-type-or-lose 'fixnum)))))
+             (emit-move node block (lvar-tn node block x) temp)
+             (vop sb!vm::move-from-word/fixnum node block
+                  temp (first results))
+             (move-lvar-result node block results lvar)
+             (return))))
+        (#.sb!vm:n-word-bits
+         (when (csubtypep (lvar-type x) (specifier-type 'word))
+           (let* ((lvar (node-lvar node))
+                  (temp (make-normal-tn
+                         (primitive-type-of most-positive-word)))
+                  (results (lvar-result-tns
+                            lvar
+                            (list (primitive-type
+                                   (specifier-type 'sb!vm:signed-word))))))
+             (emit-move node block (lvar-tn node block x) temp)
+             (vop sb!vm::word-move node block
+                  temp (first results))
+             (move-lvar-result node block results lvar)
+             (return))))))
+    (ir2-convert-full-call node block)))
 
 ;;; Convert the code in a component into VOPs.
 (defun ir2-convert (component)

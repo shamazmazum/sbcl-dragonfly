@@ -1,16 +1,108 @@
 ;;;; -*- coding: utf-8; fill-column: 78 -*-
-changes relative to sbcl-1.1.7:
+changes in sbcl-1.1.8 relative to sbcl-1.1.7:
+  * notice: The implementation of MAP-ALLOCATED-OBJECTS (the heart of
+    ROOM, plus a few SB-INTROSPECT functions) has been completely
+    rewritten; it may now exhibit different bugs than before.
+  * new feature: minimal runtime/compiler intrastructure support for SSE
+    SIMD values, as SB-EXT:SIMD-PACK. Enabled on x86-64 via the build-time
+    feature :sb-simd-pack. This should enable intrinsics extensions as
+    libraries, without patching SBCL itself. Thanks to Alexander Gavrilov
+    for maintaining a branch for so long.
   * enhancement: RUN-PROGRAM supports a :DIRECTORY argument to set
     the working directory of the spawned process.
     (lp#791800) (patch by Matthias Benkard)
+  * enhancement: boxed vectors (vectors of T or of FIXNUM) can now be
+    stack-allocated on PPC.
+  * enhancement: "fixed objects" can now be stack-allocated on PPC.
+  * enhancement: WITH-PINNED-OBJECTS no longer conses on PPC/GENCGC.
+  * enhancement: (sb-introspect:find-definition-sources-by-name x :vop) now
+    also returns VOPs which do not translate any functions, and finds
+    defoptimizer types ir2convert and stack-allocate-result.
+  * enhancement: better type derivation for APPEND, NCONC, LIST.
+    (lp#538957)
+  * enhancement: MAP-ALLOCATED-OBJECTS (the heart of ROOM) now walks the
+    heap in a manner similar to the GC rather than its previous ad-hoc
+    scheme, and is therefore no less and possibly more accurate.
+  * fixes and enhancements related to Unicode:
+    ** the character database information has been updated to Unicode 6.2;
+    ** support for canonical and compatibility decomposition of characters has
+       been added, along with support for primary composition;
+    ** support for Unicode normalization forms of strings (NFC, NFKC, NFD and
+       NFKD) has been included;
+    ** querying the character database for code points not defined by Unicode
+       gives less wrong answers (lp#1178038, reported by Ken Harris)
+  * enhancement: print intermediate evaluation results for some ASSERTed
+    expressions. (lp#789497) (patch by Alexandra Barchunova)
+  * enhancement: x86-64 disassemblies are annotated with unboxed constant
+    values when there are references to (RIP-relative) unboxed constants.
   * bug fix: type derivation for LOG{AND,IOR,XOR} scales linearly instead
     of quadratically with the size of the input in the worst case.
     (lp#1096444)
   * bug fix: handle errors when initializing *default-pathname-defaults*,
     sb-ext:*runtime-pathname*, sb-ext:*posix-argv* on startup, like character
     decoding errors, or directories being deleted.
+  * bug fix: Loading a core with a discontiguous dynamic space now correctly
+    computes the amount of dynamic space used.
+  * bug fix: disassembler missing ",8" on SHLD
+  * bug fix: backtracing through INTERNAL-ERROR signal handlers on systems
+    that provide an "invalid" stack frame link for the signal handler
+    itself now use the saved-fp-and-pc mechanism to pick up from the stack
+    frame in the interrupt (signal) context.  This is known to affect
+    threaded FreeBSD/x86-64.
+  * bug fix: some LOOP statements couldn't be compiled.
+    (lp#1178989)
+  * bug fix: sb-sequence:dosequence works on literal vectors.
+  * bug fix: errors in generic arithmetic show the assembly routine's
+    caller on x86 and x86-64. (lp#800343)
+  * bug fix: Compile-time type errors should never result in COMPILE-FILE
+    failure. (lp#943953)
+  * bug fix: Known bad local calls do not cause strange failures when
+    emitting or dumping code. (lp#504121)
+  * bug fix: Multiply-inlined structure constructor don't cause IR2-time
+    codegen errors: type checks are inserted as necessary. (lp#1177703)
+  * bug fix: Unsigned modular arithmetic is correctly converted into signed
+    modular arithemtic (mostly to exploit fixnum-width VOPs). (lp#1026634)
+  * bug fix: a combination of inlined local function with &optional and
+    recursion no longer causes undescriptive compiler errors. (lp#1180992)
+  * bug fix: sub-word BOOLEAN alien types now disregard higher order bits
+    when testing for non-zero-ness.
+  * bug fix: (CONCATENATE 'null ...) no longer fails for generic sequences.
+    (lp#1162301)
+  * bug fix: Type mismatch for the value of conditional expressions are
+    correctly reported when detected at compile-time, instead of complaining
+    about a constant NIL (similar for non-EQ-comparable catch tags).
+  * bug fix: Referring to INLINE global functions as values should not result
+    in a compilation failure. (lp#1035721)
   * optimization: faster ISQRT on fixnums and small bignums
   * optimization: faster and smaller INTEGER-LENGTH on fixnums on x86-64.
+  * optimization: On x86-64, the number of multi-byte NOP instructions used
+    for code alignment is now always minimal.
+  * optimization: On 64-bit targets, the compiler generates much faster
+    code for type checks for types known at compile time that are smaller
+    than (SIGNED-BYTE 64) or (UNSIGNED-BYTE 64) and larger than FIXNUM, and
+    their COMPLEX variants.
+  * optimization: On x86 targets, more uses of ALIEN-FUNCALL during cross
+    compilation now inline the INVOKE-WITH-SAVED-FP-AND-PC dance.
+  * optimization: ROOM no longer conses so egregiously on non-x86oid
+    systems.
+  * optimization: associative bitwise operations reassociate patterns like
+    (f (f x k1) k2) to expose (f x (f k1 k2)).  Same for + and * of
+    rational values.
+  * optimization: quasiquote expressions now perform more constant folding,
+    instead of consing equal lists at runtime. (lp#1026439)
+  * optimization: local call analysis of inlined higher-order function
+    should converge more quickly, resulting in better code for complex
+    functions.
+  * optimization: On x86-64, medium (word-sized but wider than 32 bits)
+    integer constants are handled more cleverly, especially when they
+    can be represented as sign-extended (signed-byte 32). (Based on a
+    patch by Douglas Katzman)
+  * optimization: IF/IF conversion should reliably result in sane code
+    when (some of) the results of the inner IF are always false or
+    always true.
+  * optimization: On x86oids, variable right shifts of machine words are
+    compiled into straight SAR/SHR, instead of going through the generic
+    VOP. (lp#1066204)
 
 changes in sbcl-1.1.7 relative to sbcl-1.1.6:
   * enhancement: TRACE :PRINT-ALL handles multiple-valued forms.

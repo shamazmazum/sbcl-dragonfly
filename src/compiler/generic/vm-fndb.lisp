@@ -20,7 +20,7 @@
            complex-rational-p complex-float-p complex-single-float-p
            complex-double-float-p #!+long-float complex-long-float-p
            complex-vector-p
-           base-char-p %standard-char-p %instancep %other-pointer-p
+           base-char-p %standard-char-p %instancep
            base-string-p simple-base-string-p
            #!+sb-unicode character-string-p
            #!+sb-unicode simple-character-string-p
@@ -64,9 +64,14 @@
            weak-pointer-p code-component-p lra-p
            funcallable-instance-p)
   (t) boolean (movable foldable flushable))
+
 (defknown #.(loop for (name) in *vector-without-complex-typecode-infos*
                   collect name)
-  (t) boolean (movable foldable flushable))
+    (t) boolean (movable foldable flushable))
+
+(defknown %other-pointer-p (t) boolean
+  (movable foldable flushable always-translatable))
+
 
 ;;;; miscellaneous "sub-primitives"
 
@@ -193,6 +198,44 @@
   (flushable movable))
 (defknown make-value-cell (t) t
   (flushable movable))
+
+#!+sb-simd-pack
+(progn
+  (defknown simd-pack-p (t) boolean (foldable movable flushable))
+  (defknown %simd-pack-tag (simd-pack) fixnum (movable flushable))
+  (defknown %make-simd-pack (fixnum (unsigned-byte 64) (unsigned-byte 64))
+      simd-pack
+      (flushable movable foldable))
+  (defknown %make-simd-pack-double (double-float double-float)
+      (simd-pack double-float)
+      (flushable movable foldable))
+  (defknown %make-simd-pack-single (single-float single-float
+                                    single-float single-float)
+      (simd-pack single-float)
+      (flushable movable foldable))
+  (defknown %make-simd-pack-ub32 ((unsigned-byte 32) (unsigned-byte 32)
+                                  (unsigned-byte 32) (unsigned-byte 32))
+      (simd-pack integer)
+      (flushable movable foldable))
+  (defknown %make-simd-pack-ub64 ((unsigned-byte 64) (unsigned-byte 64))
+      (simd-pack integer)
+      (flushable movable foldable))
+  (defknown (%simd-pack-low %simd-pack-high) (simd-pack)
+      (unsigned-byte 64)
+      (flushable movable foldable))
+  (defknown %simd-pack-ub32s (simd-pack)
+      (values (unsigned-byte 32) (unsigned-byte 32)
+              (unsigned-byte 32) (unsigned-byte 32))
+      (flushable movable foldable))
+  (defknown %simd-pack-ub64s (simd-pack)
+      (values (unsigned-byte 64) (unsigned-byte 64))
+      (flushable movable foldable))
+  (defknown %simd-pack-singles (simd-pack)
+      (values single-float single-float single-float single-float)
+      (flushable movable foldable))
+  (defknown %simd-pack-doubles (simd-pack)
+      (values double-float double-float)
+      (flushable movable foldable)))
 
 ;;;; threading
 
