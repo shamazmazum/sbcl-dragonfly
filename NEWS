@@ -1,4 +1,55 @@
 ;;;; -*- coding: utf-8; fill-column: 78 -*-
+changes in sbcl-1.1.9 relative to sbcl-1.1.8:
+  * new feature: the contrib SB-GMP links with libgmp at runtime to speed
+    up arithmetic on bignums and ratios.  (contributed by Stephan Frank)
+  * enhancement: disassemble now annotates some previously missing static
+    functions, like LENGTH.
+  * enhancement: clean.sh now also cleans doc/internals.
+  * enhancement: SB-EXT:PRINT-SYMBOL-WITH-PREFIX can be used within ~// to
+    print a symbol with a package prefix.
+  * enhancement: The debugger and backtracing are more robust against buggy
+    PRINT-OBJECT methods.
+  * optimization: calls to static functions on x86-64 use less instructions.
+  * optimization: compute encode-universal-time at compile time when possible.
+  * optimization: when referencing internal functions as #'x, don't go through
+    an indirect fdefn structure.
+  * optimization: SLEEP doesn't cons on non-immediate floats and on ratios.
+  * optimization: (mod fixnum) type-checks are performed using one unsigned
+    comparison, instead of two.
+  * optimization: enable more modular arithmetic transforms in the presence of
+    conditionals.
+  * optimization: bitwise OR forms can now trigger modular arithmetic as well,
+    when the result is known to be negative.
+  * optimization: recognize more cases of useless LOGAND/LOGIOR with constants.
+  * optimization: comparisons between rationals and constant floats or between
+    integers and constant ratios are now converted to rationals/integers at
+    compile time.
+  * optimization: Smaller and faster DOUBLE-FLOAT-LOW-BITS on x86-64.
+  * bug fix: problems with NCONC type derivation (reported by Jerry James).
+  * bug fix: EXPT type derivation no longer constructs bogus floating-point
+    types.  (reported by Vsevolod Dyomkin)
+  * bug fix: sb-bsd-sockets has correct declaration of the canonname field of
+    addrinfo. (lp#1187041, patch by Jerry James)
+  * bug fix: uninitialized type-error conditions can now be printed.
+    (lp#1184586)
+  * bug fix: tests for sb-bsd-sockets no longer use a predefined port for
+    listening, allowing several tests to run in parallel.
+  * bug fix: during disassembly to *COMPILER-TRACE-OUTPUT* instruction
+    prefixes as used on x86 and x86-64 no longer sometimes print incorrectly.
+    (lp#1085729)
+  * bug fix: Specialised SIMD-PACK types can be negated.
+  * bug fix: Modular arithmetic is more robust. (incidentally fixes another bug
+    reported by Eric Marsden)
+  * bug fix: FP return values from foreign calls are always rounded to single
+    or double float precision on x87.
+  * bug fix: Known-safe vector access on x86oids should not fail spuriously
+    when the index is of the form (+ x constant-positive-integer).
+  * bug fix: Remove GPL-licensed files from source distribution. (lp#1185668)
+  * bug fix: backtrace printer no longer tries to create very large lists when
+    the arg-count register is clobberred by other code. (lp#1192929)
+  * bug fix: x86 should never signal an FP exception while boxing an FP value,
+    a situation that lands us into ldb.
+
 changes in sbcl-1.1.8 relative to sbcl-1.1.7:
   * notice: The implementation of MAP-ALLOCATED-OBJECTS (the heart of
     ROOM, plus a few SB-INTROSPECT functions) has been completely

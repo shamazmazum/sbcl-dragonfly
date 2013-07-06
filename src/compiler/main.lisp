@@ -15,7 +15,6 @@
 
 ;;; FIXME: Doesn't this belong somewhere else, like early-c.lisp?
 (declaim (special *constants* *free-vars* *component-being-compiled*
-                  *code-vector* *next-location* *result-fixups*
                   *free-funs* *source-paths*
                   *continuation-number* *continuation-numbers*
                   *number-continuations* *tn-id* *tn-ids* *id-tns*
@@ -526,6 +525,13 @@ Examples:
         (event reoptimize-maxed-out)
         (return))
       (incf loop-count)))
+
+  (when *check-consistency*
+    (do-blocks-backwards (block component)
+      (awhen (flush-dead-code block)
+        (let ((*compiler-error-context* it))
+          (compiler-warn "dead code detected at the end of ~S"
+                         'ir1-phases)))))
 
   (ir1-finalize component)
   (values))

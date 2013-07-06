@@ -623,7 +623,9 @@
              (type-error-expected-type condition)))))
 
 (def!method print-object ((condition type-error) stream)
-  (if *print-escape*
+  (if (and *print-escape*
+           (slot-boundp condition 'expected-type)
+           (slot-boundp condition 'datum))
       (flet ((maybe-string (thing)
                (ignore-errors
                  (write-to-string thing :lines 1 :readably nil :array nil :pretty t))))
@@ -694,9 +696,10 @@
 (define-condition undefined-function (cell-error) ()
   (:report
    (lambda (condition stream)
-     (format stream
-             "The function ~/sb-impl::print-symbol-with-prefix/ is undefined."
-             (cell-error-name condition)))))
+     (let ((*package* (find-package :keyword)))
+       (format stream
+               "The function ~S is undefined."
+               (cell-error-name condition))))))
 
 (define-condition special-form-function (undefined-function) ()
   (:report
@@ -975,9 +978,9 @@
   ((name :initarg :name :reader implicit-generic-function-name))
   (:report
    (lambda (condition stream)
-     (let ((*package* (find-package :keyword)))
-       (format stream "~@<Implicitly creating new generic function ~S.~:@>"
-               (implicit-generic-function-name condition))))))
+     (format stream "~@<Implicitly creating new generic function ~
+                     ~/sb-impl::print-symbol-with-prefix/.~:@>"
+             (implicit-generic-function-name condition)))))
 
 (define-condition extension-failure (reference-condition simple-error)
   ())

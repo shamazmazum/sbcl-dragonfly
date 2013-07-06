@@ -1632,7 +1632,7 @@ constant shift greater than word length")))
 
 (define-full-reffer bignum-ref * bignum-digits-offset other-pointer-lowtag
   (unsigned-reg) unsigned-num sb!bignum:%bignum-ref)
-(define-full-reffer+offset bignum--ref-with-offset * bignum-digits-offset
+(define-full-reffer+offset bignum-ref-with-offset * bignum-digits-offset
   other-pointer-lowtag (unsigned-reg) unsigned-num
   sb!bignum:%bignum-ref-with-offset)
 (define-full-setter bignum-set * bignum-digits-offset other-pointer-lowtag
@@ -1890,6 +1890,77 @@ constant shift greater than word length")))
     (move result digit)
     (move ecx count)
     (inst shl result :cl)))
+
+(define-vop (logand-bignum/c)
+  (:translate logand)
+  (:policy :fast-safe)
+  (:args (x :scs (descriptor-reg)))
+  (:arg-types bignum (:constant word))
+  (:results (r :scs (unsigned-reg)))
+  (:info mask)
+  (:result-types unsigned-num)
+  (:generator 4
+    (let ((mask (constantize mask)))
+      (cond ((or (integerp mask)
+                 (location= x r))
+             (loadw r x bignum-digits-offset other-pointer-lowtag)
+             (unless (eql mask -1)
+               (inst and r mask)))
+            (t
+             (inst mov r mask)
+             (inst and r (make-ea-for-object-slot x
+                                                  bignum-digits-offset
+                                                  other-pointer-lowtag)))))))
+
+;; Specialised mask-signed-field VOPs.
+(define-vop (mask-signed-field-word/c)
+  (:translate sb!c::mask-signed-field)
+  (:policy :fast-safe)
+  (:args (x :scs (signed-reg unsigned-reg) :target r))
+  (:arg-types (:constant (integer 0 64)) untagged-num)
+  (:results (r :scs (signed-reg)))
+  (:result-types signed-num)
+  (:info width)
+  (:generator 3
+    (cond ((zerop width)
+           (zeroize r))
+          ((= width 64)
+           (move r x))
+          ((member width '(32 16 8))
+           (inst movsx r (reg-in-size x (ecase width
+                                             (32 :dword)
+                                             (16 :word)
+                                             (8  :byte)))))
+          (t
+           (move r x)
+           (let ((delta (- n-word-bits width)))
+             (inst shl r delta)
+             (inst sar r delta))))))
+
+(define-vop (mask-signed-field-bignum/c)
+  (:translate sb!c::mask-signed-field)
+  (:policy :fast-safe)
+  (:args (x :scs (descriptor-reg) :target r))
+  (:arg-types (:constant (integer 0 64)) bignum)
+  (:results (r :scs (signed-reg)))
+  (:result-types signed-num)
+  (:info width)
+  (:generator 4
+    (cond ((zerop width)
+           (zeroize r))
+          ((member width '(8 16 32 64))
+           (ecase width
+             (64 (loadw r x bignum-digits-offset other-pointer-lowtag))
+             ((32 16 8)
+              (inst movsx r (make-ea (ecase width (32 :dword) (16 :word) (8 :byte))
+                                     :base x
+                                     :disp (- (* bignum-digits-offset n-word-bytes)
+                                              other-pointer-lowtag))))))
+          (t
+           (loadw r x bignum-digits-offset other-pointer-lowtag)
+           (let ((delta (- n-word-bits width)))
+             (inst shl r delta)
+             (inst sar r delta))))))
 
 ;;;; static functions
 

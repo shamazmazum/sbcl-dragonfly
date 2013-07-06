@@ -3089,7 +3089,7 @@
          (array-in-bounds-p a 5 2))))))
 
 ;;; optimizing (EXPT -1 INTEGER)
-(test-util:with-test (:name (expt minus-one integer))
+(with-test (:name (expt minus-one integer))
   (dolist (x '(-1 -1.0 -1.0d0))
     (let ((fun (compile nil `(lambda (x) (expt ,x (the fixnum x))))))
       (assert (not (ctu:find-named-callees fun)))
@@ -4404,17 +4404,24 @@
   (let ((test-cases
           '((lambda () (append 10)) (integer 10 10)
             (lambda () (append nil 10)) (integer 10 10)
-            (lambda (x) (append x 10)) t
+            (lambda (x) (append x 10)) (or (integer 10 10) cons)
             (lambda (x) (append x (cons 1 2))) cons
             (lambda (x y) (append x (cons 1 2) y)) cons
             (lambda (x y) (nconc x (the list y) x)) t
             (lambda (x y) (nconc (the atom x) y)) t
             (lambda (x y) (nconc (the (or null (eql 10)) x) y)) t
-            (lambda (x y) (print (length y)) (append x y)) sequence)))
+            (lambda (x y) (nconc (the (or cons vector) x) y)) cons
+            (lambda (x y) (nconc (the sequence x) y)) t
+            (lambda (x y) (print (length y)) (append x y)) sequence
+            (lambda (x y) (print (length y)) (append x y)) sequence
+            (lambda (x y) (append (the (member (a) (b)) x) y)) cons
+            (lambda (x y) (append (the (member (a) (b) c) x) y)) cons
+            (lambda (x y) (append (the (member (a) (b) nil) x) y)) t)))
     (loop for (function result-type) on test-cases by #'cddr
-          do (assert (equal (car (cdaddr (sb-kernel:%simple-fun-type
-                                          (compile nil function))))
-                            result-type)))))
+          do (assert (sb-kernel:type= (sb-kernel:specifier-type
+                                       (car (cdaddr (sb-kernel:%simple-fun-type
+                                                     (compile nil function)))))
+                                      (sb-kernel:specifier-type result-type))))))
 
 (with-test (:name :bug-504121)
   (compile nil `(lambda (s)
@@ -4571,8 +4578,7 @@
           (test (+ most-negative-fixnum x) y))))))
 
 ;; expected failure
-(test-util:with-test (:name :fold-index-addressing-positive-offset
-                      :fails-on '(and))
+(with-test (:name :fold-index-addressing-positive-offset)
   (let ((f (compile nil `(lambda (i)
                            (if (typep i '(integer -31 31))
                                (aref #. (make-array 63) (+ i 31))
@@ -4580,21 +4586,85 @@
     (funcall f -31)))
 
 ;; 5d3a728 broke something like this in CL-PPCRE
-(test-util:with-test (:name :fold-index-addressing-potentially-negative-index)
+(with-test (:name :fold-index-addressing-potentially-negative-index)
   (compile nil `(lambda (index vector)
                   (declare (optimize speed (safety 0))
                            ((simple-array character (*)) vector)
                            ((unsigned-byte 24) index))
                   (aref vector (1+ (mod index (1- (length vector))))))))
 
-(test-util:with-test (:name :constant-fold-ash/right-fixnum)
+(with-test (:name :constant-fold-ash/right-fixnum)
   (compile nil `(lambda (a b)
                   (declare (type fixnum a)
                            (type (integer * -84) b))
                   (ash a b))))
 
-(test-util:with-test (:name :constant-fold-ash/right-word)
+(with-test (:name :constant-fold-ash/right-word)
   (compile nil `(lambda (a b)
                   (declare (type word a)
                            (type (integer * -84) b))
                   (ash a b))))
+
+(with-test (:name :nconc-derive-type)
+  (let ((function (compile nil `(lambda (x y)
+                                  (declare (type (or cons fixnum) x))
+                                  (nconc x y)))))
+    (assert (equal (sb-kernel:%simple-fun-type function)
+                   '(function ((or cons fixnum) t) (values cons &optional))))))
+
+;; make sure that all data-vector-ref-with-offset VOPs are either
+;; specialised on a 0 offset or accept signed indices
+(with-test (:name :data-vector-ref-with-offset-signed-index)
+  (let ((dvr (find-symbol "DATA-VECTOR-REF-WITH-OFFSET" "SB-KERNEL")))
+    (when dvr
+      (assert
+       (null
+        (loop for info in (sb-c::fun-info-templates
+                           (sb-c::fun-info-or-lose dvr))
+              for (nil second-arg third-arg) = (sb-c::vop-info-arg-types info)
+              unless (or (typep second-arg '(cons (eql :constant)))
+                         (find '(integer 0 0) third-arg :test 'equal)
+                         (equal second-arg
+                                `(:or ,(sb-c::primitive-type-or-lose
+                                        'sb-vm::positive-fixnum)
+                                      ,(sb-c::primitive-type-or-lose
+                                        'fixnum))))
+                collect info))))))
+
+(with-test (:name :data-vector-set-with-offset-signed-index)
+  (let ((dvr (find-symbol "DATA-VECTOR-SET-WITH-OFFSET" "SB-KERNEL")))
+    (when dvr
+      (assert
+       (null
+        (loop for info in (sb-c::fun-info-templates
+                           (sb-c::fun-info-or-lose dvr))
+              for (nil second-arg third-arg) = (sb-c::vop-info-arg-types info)
+              unless (or (typep second-arg '(cons (eql :constant)))
+                         (find '(integer 0 0) third-arg :test 'equal)
+                         (equal second-arg
+                                `(:or ,(sb-c::primitive-type-or-lose
+                                        'sb-vm::positive-fixnum)
+                                      ,(sb-c::primitive-type-or-lose
+                                        'fixnum))))
+                collect info))))))
+
+(with-test (:name :maybe-inline-ref-to-dead-lambda)
+  (compile nil `(lambda (string)
+                  (declare (optimize speed (space 0)))
+                  (cond ((every #'digit-char-p string)
+                         nil)
+                        ((some (lambda (c)
+                                 (digit-char-p c))
+                               string))))))
+
+;; the x87 backend used to sometimes signal FP errors during boxing,
+;; because converting between double and single float values was a
+;; noop (fixed), and no doubt many remaining issues.  We now store
+;; the value outside pseudo-atomic, so any SIGFPE should be handled
+;; corrrectly.
+;;
+;; When it fails, this test lands into ldb.
+(with-test (:name :no-overflow-during-allocation)
+  (handler-case (eval '(cosh 90))
+    (floating-point-overflow ()
+      t)))

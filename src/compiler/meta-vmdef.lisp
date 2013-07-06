@@ -638,7 +638,7 @@
           (let ((target (find-operand (operand-parse-target op) parse
                                       '(:temporary :result))))
             ;; KLUDGE: These formulas must be consistent with those in
-            ;; %EMIT-GENERIC-VOP, and this is currently maintained by
+            ;; EMIT-VOP, and this is currently maintained by
             ;; hand. -- WHN 2002-01-30, paraphrasing APD
             (targets (+ (* index max-vop-tn-refs)
                         (ecase (operand-parse-kind target)
@@ -709,8 +709,7 @@
                                      :element-type '(specializable ,te-type)))))))))
 
 (defun make-emit-function-and-friends (parse)
-  `(:emit-function #'emit-generic-vop
-    :temps ,(compute-temporaries-description parse)
+  `(:temps ,(compute-temporaries-description parse)
     ,@(compute-ref-ordering parse)))
 
 ;;;; generator functions
@@ -1742,15 +1741,8 @@
 ;;; Call the emit function for TEMPLATE, linking the result in at the
 ;;; end of BLOCK.
 (defmacro emit-template (node block template args results &optional info)
-  (with-unique-names (first last)
-    (once-only ((n-node node)
-                (n-block block)
-                (n-template template))
-      `(multiple-value-bind (,first ,last)
-           (funcall (template-emit-function ,n-template)
-                    ,n-node ,n-block ,n-template ,args ,results
-                    ,@(when info `(,info)))
-         (insert-vop-sequence ,first ,last ,n-block nil)))))
+  `(emit-and-insert-vop ,node ,block ,template ,args ,results nil
+                        ,@(when info `(,info))))
 
 ;;; VOP Name Node Block Arg* Info* Result*
 ;;;

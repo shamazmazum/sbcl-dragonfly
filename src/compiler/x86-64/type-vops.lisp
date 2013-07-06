@@ -384,6 +384,43 @@
 
       (emit-label yep)
       (move result value))))
+
+(define-vop (check-mod-fixnum check-type)
+  (:info type)
+  (:temporary (:sc any-reg) temp)
+  (:generator 30
+     (let* ((low (numeric-type-low type))
+            (hi (numeric-type-high type))
+            (fixnum-hi (fixnumize hi))
+            (error (gen-label)))
+       ;; FIXME: abstract
+       (assemble (*elsewhere*)
+         (emit-label error)
+         ;; The general case uses the number directly,
+         ;; and it will already have the number constantized
+         ;; even though MOV can use 64-bit immediates,
+         ;; using the same inlined constant will save space
+         (if (= (logcount (1+ hi)) 1)
+             (inst mov temp fixnum-hi)
+             (inst mov temp (constantize fixnum-hi)))
+         (emit-error-break vop error-trap
+                           (error-number-or-lose 'object-not-mod-error)
+                           (list value temp)))
+       (aver (zerop low))
+       (cond
+         ;; Handle powers of two specially
+         ;; The higher bits and the fixnum tag can be tested in one go
+         ((= (logcount (1+ hi)) 1)
+          (inst test value
+                (constantize (lognot fixnum-hi)))
+          (inst jmp :ne error))
+         (t
+          (generate-fixnum-test value)
+          (inst jmp :ne error)
+          (inst cmp value (constantize fixnum-hi))
+          (inst jmp :a error)))
+       (move result value))))
+
 
 ;;;; list/symbol types
 ;;;
@@ -429,7 +466,6 @@
 (progn
   (!define-type-vops simd-pack-p nil nil nil (simd-pack-widetag))
 
-  #!+x86-64
   (define-vop (check-simd-pack check-type)
     (:args (value :target result
                   :scs (any-reg descriptor-reg

@@ -473,10 +473,6 @@
 (defknown %map-to-list-arity-1 (callable sequence) list (flushable call))
 (defknown %map-to-simple-vector-arity-1 (callable sequence) simple-vector
   (flushable call))
-(defknown %map-to-nil-on-simple-vector (callable simple-vector) null
-  (flushable call))
-(defknown %map-to-nil-on-vector (callable vector) null (flushable call))
-(defknown %map-to-nil-on-sequence (callable sequence) null (flushable call))
 
 (defknown map-into (sequence callable &rest sequence)
   sequence
@@ -1114,7 +1110,8 @@
      (:lines (or unsigned-byte null))
      (:right-margin (or unsigned-byte null))
      (:miser-width (or unsigned-byte null))
-     (:pprint-dispatch t))
+     (:pprint-dispatch t)
+     (:suppress-errors t))
   t
   (any explicit-check)
   :derive-type #'result-type-first-arg)
@@ -1476,12 +1473,12 @@
 (defknown %check-bound (array index fixnum) index
   (movable foldable flushable dx-safe))
 (defknown data-vector-ref (simple-array index) t
-  (foldable explicit-check always-translatable))
-(defknown data-vector-ref-with-offset (simple-array index fixnum) t
-  (foldable explicit-check always-translatable))
+  (foldable unsafely-flushable explicit-check always-translatable))
+(defknown data-vector-ref-with-offset (simple-array fixnum fixnum) t
+  (foldable unsafely-flushable explicit-check always-translatable))
 (defknown data-vector-set (array index t) t
   (explicit-check always-translatable))
-(defknown data-vector-set-with-offset (array index fixnum t) t
+(defknown data-vector-set-with-offset (array fixnum fixnum t) t
   (explicit-check always-translatable))
 (defknown hairy-data-vector-ref (array index) t
   (foldable explicit-check))
