@@ -1,4 +1,19 @@
 ;;;; -*- coding: utf-8; fill-column: 78 -*-
+changes in sbcl-1.1.10 relative to sbcl-1.1.9:
+  * enhancement: ASDF has been updated to 3.0.2.
+  * optimization: stack frames are packed more efficiently on x86oids, which
+    ought to reduce the frequency of Methuselahn conservative references (it
+    certainly helps with gc.impure.lisp / BUG-936304 on x86).
+  * optimization: on x86 and x86-64, integer negation forms like (- x) are now
+    recognized in modular arithmetic contexts, and compile to native negate,
+    rather than going through bignums only to keep the low bits.
+  * bug fix: Compiling potential modularic arithmetic forms does not cause type
+    errors when some integer types lack lower or upper bounds. (lp#1199127)
+  * bug fix: Non-trivial modular arithmetic forms are always cut to the right
+    bitwidth before being used in a non-modular context. (lp#1199428)
+  * bug fix: Multiple catch/unwind blocks in a single function are now
+    allocated in the right stack order on win32. (lp#1072739)
+
 changes in sbcl-1.1.9 relative to sbcl-1.1.8:
   * new feature: the contrib SB-GMP links with libgmp at runtime to speed
     up arithmetic on bignums and ratios.  (contributed by Stephan Frank)
