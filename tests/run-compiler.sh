@@ -25,7 +25,7 @@ while [ $# -gt 0 ]; do
                 FreeBSD-X86-64)  new=-fPIC ;;
                 Linux-MIPS)      new=-fPIC ;;
                 Linux-X86-64)    new=-fPIC ;;
-               Linux-PowerPC)   new=-fPIC ;;
+                Linux-PowerPC)   new=-fPIC ;;
                 NetBSD-PowerPC)  new=-fPIC ;;
                 NetBSD-X86-64)   new=-fPIC ;;
                 OpenBSD-PowerPC) new=-fPIC ;;
@@ -33,6 +33,8 @@ while [ $# -gt 0 ]; do
                 SunOS-SPARC)     new=-fPIC ;;
                 SunOS-X86)       new=-fPIC ;;
                 SunOS-X86-64)    new=-fPIC ;;
+                DragonFly-X86-64)new=-fPIC ;;
+                DragonFly-X84)   new=-fPIC ;;
             esac
             ;;
 
