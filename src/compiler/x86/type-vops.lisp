@@ -14,7 +14,7 @@
 ;;;; test generation utilities
 
 (defun generate-fixnum-test (value)
-  (emit-optimized-test-inst value 3))
+  (emit-optimized-test-inst value fixnum-tag-mask))
 
 (defun %test-fixnum (value target not-p)
   (generate-fixnum-test value)
@@ -293,8 +293,8 @@
               (values not-target target)
               (values target not-target))
         ;; Is it a fixnum?
-        (generate-fixnum-test value)
         (move eax-tn value)
+        (inst test al-tn fixnum-tag-mask)
         (inst jmp :e fixnum)
 
         ;; If not, is it an other pointer?
