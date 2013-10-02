@@ -19,7 +19,7 @@
 (declaim (maybe-inline digit-char-p digit-weight))
 
 (deftype char-code ()
-  `(integer 0 (,char-code-limit)))
+  `(integer 0 (,sb!xc:char-code-limit)))
 
 #!+sb-unicode
 (progn
@@ -45,32 +45,38 @@
                     array))))
          (let ((character-database (read-ub8-vector (file "ucd" "dat")))
                (decompositions (read-ub8-vector (file "decomp" "dat")))
-               (long-decompositions (read-ub8-vector (file "ldecomp" "dat"))))
+               (long-decompositions (read-ub8-vector (file "ldecomp" "dat")))
+               (primary-compositions (read-ub8-vector (file "comp" "dat"))))
            `(progn
-              (declaim (type (simple-array (unsigned-byte 8) (*)) **character-database** **character-decompositions** **character-long-decompositions**))
+              (declaim (type (simple-array (unsigned-byte 8) (*))
+                             **character-database**
+                             **character-decompositions**
+                             **character-long-decompositions**))
               (defglobal **character-database** ,character-database)
               (defglobal **character-decompositions** ,decompositions)
               (defglobal **character-long-decompositions** ,long-decompositions)
-              (defglobal **character-primary-compositions**
-                (let ((table (make-hash-table))
-                      (info ,(read-ub8-vector (file "comp" "dat"))))
-                  (flet ((code (j)
-                           (dpb (aref info (* 4 j))
-                                (byte 8 24)
-                                (dpb (aref info (+ (* 4 j) 1))
-                                     (byte 8 16)
-                                     (dpb (aref info (+ (* 4 j) 2))
-                                          (byte 8 8)
-                                          (aref info (+ (* 4 j) 3)))))))
-                    #!+sb-unicode
-                    (dotimes (i (/ (length info) 12))
-                      (setf (gethash (dpb (code (* 3 i)) (byte 21 21)
-                                          (code (1+ (* 3 i))))
-                                     table)
-                            (code-char (code (+ (* 3 i) 2)))))
-                    table)))
+              ;; KLUDGE: temporary value, fixed up in cold-load
+              (defglobal **character-primary-compositions** ,primary-compositions)
               (defun !character-database-cold-init ()
-                (setf **character-database** ,character-database))
+                (setf **character-database** ,character-database)
+                (setf **character-primary-compositions**
+                      (let ((table (make-hash-table))
+                            (info ,primary-compositions))
+                        (flet ((code (j)
+                                 (dpb (aref info (* 4 j))
+                                      (byte 8 24)
+                                      (dpb (aref info (+ (* 4 j) 1))
+                                           (byte 8 16)
+                                           (dpb (aref info (+ (* 4 j) 2))
+                                                (byte 8 8)
+                                                (aref info (+ (* 4 j) 3)))))))
+                          #!+sb-unicode
+                          (dotimes (i (/ (length info) 12))
+                            (setf (gethash (dpb (code (* 3 i)) (byte 21 21)
+                                                (code (1+ (* 3 i))))
+                                           table)
+                                  (code-char (code (+ (* 3 i) 2)))))
+                          table))))
               ,(with-open-file (stream (file "ucd-names" "lisp-expr")
                                        :direction :input
                                        :element-type 'character)
@@ -518,7 +524,31 @@ is either numeric or alphabetic."
           (char-code ,ch)))))
 
 (defun two-arg-char-equal (c1 c2)
-  (= (equal-char-code c1) (equal-char-code c2)))
+  (flet ((base-char-equal-p ()
+           (let* ((code1 (char-code c1))
+                  (code2 (char-code c2))
+                  (sum (logxor code1 code2)))
+             (when (eql sum #x20)
+               (let ((sum (+ code1 code2)))
+                 (or (and (> sum 161) (< sum 213))
+                     (and (> sum 415) (< sum 461))
+                     (and (> sum 463) (< sum 477))))))))
+    (declare (inline base-char-equal-p))
+    (or (eq c1 c2)
+        #!-sb-unicode
+        (base-char-equal-p)
+        #!+sb-unicode
+        (typecase c1
+          (base-char
+           (and (base-char-p c2)
+                (base-char-equal-p)))
+          (t
+           (= (equal-char-code c1) (equal-char-code c2)))))))
+
+(defun char-equal-constant (x char reverse-case-char)
+  (declare (type character x))
+  (or (eq char x)
+      (eq reverse-case-char x)))
 
 (defun char-equal (character &rest more-characters)
   #!+sb-doc

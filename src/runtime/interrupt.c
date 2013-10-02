@@ -1084,23 +1084,25 @@ interrupt_handle_now(int signal, siginfo_t *info, os_context_t *context)
          * in PA. MG - 2005-08-29  */
 
         lispobj info_sap, context_sap;
+
+#ifndef LISP_FEATURE_SB_SAFEPOINT
         /* Leave deferrable signals blocked, the handler itself will
          * allow signals again when it sees fit. */
-#ifndef LISP_FEATURE_SB_SAFEPOINT
         unblock_gc_signals(0, 0);
-#endif
-        context_sap = alloc_sap(context);
-        info_sap = alloc_sap(info);
-
-        FSHOW_SIGNAL((stderr,"/calling Lisp-level handler\n"));
-
-#ifdef LISP_FEATURE_SB_SAFEPOINT
+#else
         WITH_GC_AT_SAFEPOINTS_ONLY()
 #endif
-        funcall3(handler.lisp,
-                 make_fixnum(signal),
-                 info_sap,
-                 context_sap);
+        { // the block is needed for WITH_GC_AT_SAFEPOINTS_ONLY() to work
+            context_sap = alloc_sap(context);
+            info_sap = alloc_sap(info);
+
+            FSHOW_SIGNAL((stderr,"/calling Lisp-level handler\n"));
+
+            funcall3(handler.lisp,
+                     make_fixnum(signal),
+                     info_sap,
+                     context_sap);
+        }
     } else {
         /* This cannot happen in sane circumstances. */
 

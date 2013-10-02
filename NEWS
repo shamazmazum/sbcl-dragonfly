@@ -1,4 +1,46 @@
 ;;;; -*- coding: utf-8; fill-column: 78 -*-
+changes in sbcl-1.1.12 relative to sbcl-1.1.11:
+  * enhancement: Add sb-bsd-sockets:socket-shutdown, for calling
+    shutdown(3). (thanks to Jan Moringen, lp#1207483)
+  * enhancement: document extensible sequences.  (thanks to Jan Moringen,
+    lp#994528)
+  * optimization: EQUAL and EQUALP transforms are smarter.
+    (thanks to Elias Martenson, lp#1220084)
+  * optimization: CHAR-EQUAL is faster for constant and base-char arguments.
+  * bug fix: probe-file now can access symlinks to pipes and sockets in
+    /proc/pid/fd on Linux. (reported by Eric Schulte)
+  * bug fix: SBCL can now be built on Solaris x86-64.
+  * bug fix: Floating point exceptions do not persist on Solaris anymore.
+  * bug fix: (setf . a) is pprinted correctly (reported by Douglas Katzman).
+  * bug fix: handle compiler-error in LOAD when it's not run from inside EVAL.
+    (lp#1219601)
+  * bug fix: SB-GMP:MPZ-POW no longer segfaults given a non-bignum base.
+    (thanks to Stephan Frank)
+  * bug fix: space allocation of result bignums in SB-GMP is more accurate.
+    (thanks to Stephan Frank, lp#1206191)
+  * bug fix: sb-safepoint can now reliably handle signal interruptions of
+    foreign code. (lp#1133018)
+  * bug fix: the compiler-macro for MAKE-INSTANCE when emitting "fallback"
+    constructors no longer fails to merge actual and default initargs
+    (thanks to Jan Moringen, lp#1179858)
+  * bug fix: the compiler-macro for MAKE-INSTANCE when emitting "fallback"
+    constructors handles non-KEYWORD initialization arguments more correctly.
+  * bug fix: loading the SB-SIMPLE-STREAMS contributed module no longer
+    clobbers FILE-NAMESTRING.  (thanks to Anton Kovalenko, lp#884603)
+  * bug fix: class definitions with CPLs inconsistent with their metaclasses
+    are less likely to destroy the object system's integrity.  (lp#309076)
+  * bug fix: restart clause parsing in RESTART-CASE is more in line with the
+    standard.  (lp#1203585, thanks to Jan Moringen)
+  * bug fix: silence a note from RESTART-CASE under high-SPEED optimization
+    settings.  (lp#1023721)
+  * bug fix: getting the order of arguments to
+    SB-MOP:SET-FUNCALLABLE-INSTANCE-FUNCTION wrong produces a sensible error
+    rather than a failed AVER.  (reported by Paul Nathan)
+  * bug fix: Parsing of &optional/&key/&rest arguments now never overwrites
+    arguments during copying on x86 and x86-64; it may still happen on other
+    platforms when there are more fixed arguments than stack slots.
+    (reported by Jan Moringen)
+
 changes in sbcl-1.1.11 relative to sbcl-1.1.10:
   * enhancement: support building the manual under texinfo version 5.
     (lp#1189146)

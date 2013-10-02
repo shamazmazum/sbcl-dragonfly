@@ -1226,8 +1226,7 @@
 ;;; test case from Gerd Moellmann
 (define-method-combination r-c/c-m-1 ()
   ((primary () :required t))
-  `(restart-case (call-method ,(first primary))
-     ()))
+  `(restart-case (call-method ,(first primary))))
 
 (defgeneric r-c/c-m-1-gf ()
   (:method-combination r-c/c-m-1)
@@ -2031,5 +2030,49 @@
                (slot-value (make-1099708c-list-2) 'slot-1099708c-list)))
   (assert (eql (slot-value (make-1099708c-list-1) 'slot-1099708c-list)
                (slot-value (make-1099708c-list-2) 'slot-1099708c-list))))
+
+;;; bug-1179858
+
+;;; Define a class and force the "fallback" constructor generator to be
+;;; used by having a HAIRY-AROUND-OR-NONSTANDARD-PRIMARY-METHOD-P on
+;;; SHARED-INITIALIZE.
+(defclass bug-1179858 ()
+  ((foo :initarg :foo :reader bug-1179858-foo))
+  (:default-initargs :foo (error "Should not be evaluated")))
+(defmethod shared-initialize :around ((instance bug-1179858) (slot-names t) &key)
+  (call-next-method))
+
+(with-test (:name (:make-instance :fallback-generator-initarg-handling :bug-1179858))
+  ;; Now compile a lambda containing MAKE-INSTANCE to exercise the
+  ;; fallback constructor generator. Call the resulting compiled
+  ;; function to trigger the bug.
+  (funcall (compile nil '(lambda () (make-instance 'bug-1179858 :foo t)))))
+
+;;; Other brokenness, found while investigating: fallback-generator
+;;; handling of non-keyword initialization arguments
+(defclass bug-1179858b ()
+  ((foo :initarg foo :reader bug-1179858b-foo))
+  (:default-initargs foo 14))
+(defmethod shared-initialize :around ((instance bug-1179858b) (slot-names t) &key)
+  (call-next-method))
+
+(with-test (:name (:make-instance :fallback-generator-non-keyword-initarg :bug-1179858))
+  (flet ((foo= (n i) (= (bug-1179858b-foo i) n)))
+    (assert
+     (foo= 14 (funcall (compile nil '(lambda () (make-instance 'bug-1179858b))))))
+    (assert
+     (foo= 15 (funcall (compile nil '(lambda () (make-instance 'bug-1179858b 'foo 15))))))))
+
+(with-test (:name (:cpl-violation-setup :bug-309076))
+  (assert (raises-error?
+           (progn
+             (defclass bug-309076-broken-class (standard-class) ()
+               (:metaclass sb-mop:funcallable-standard-class))
+             (sb-mop:finalize-inheritance (find-class 'bug-309076-broken-class))))))
+
+(with-test (:name (:cpl-violation-irrelevant-class :bug-309076))
+  (defclass bug-309076-class (standard-class) ())
+  (defmethod sb-mop:validate-superclass ((x bug-309076-class) (y standard-class)) t)
+  (assert (typep (make-instance 'bug-309076-class) 'bug-309076-class)))
 
 ;;;; success

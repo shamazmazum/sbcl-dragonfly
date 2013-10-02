@@ -1775,7 +1775,7 @@
       (error "bad RANDOM event"))))
 
 ;;; 0.8.17.28-sma.1 lost derived type information.
-(with-test (:name "0.8.17.28-sma.1" :fails-on :sparc)
+(with-test (:name :0.8.17.28-sma.1 :fails-on :sparc)
   (handler-bind ((sb-ext:compiler-note (lambda (c) (error "~A" c))))
     (compile nil
       '(lambda (x y v)
@@ -2986,8 +2986,8 @@
         (compile nil `(lambda (x)
                         (declare (character x) (optimize speed))
                         (,name x))))
-      (dolist (name '(char= char/= char< char> char<= char>= char-equal
-                      char-not-equal char-lessp char-greaterp char-not-greaterp
+      (dolist (name '(char= char/= char< char> char<= char>=
+                      char-lessp char-greaterp char-not-greaterp
                       char-not-lessp))
         (setf current name)
         (compile nil `(lambda (x y)
@@ -3091,7 +3091,7 @@
          (array-in-bounds-p a 5 2))))))
 
 ;;; optimizing (EXPT -1 INTEGER)
-(with-test (:name (expt minus-one integer))
+(with-test (:name (expt -1 integer))
   (dolist (x '(-1 -1.0 -1.0d0))
     (let ((fun (compile nil `(lambda (x) (expt ,x (the fixnum x))))))
       (assert (not (ctu:find-named-callees fun)))
@@ -4479,7 +4479,7 @@
                     (setf hash (logand most-positive-word
                                        (ash hash 5)))))))
 
-(with-test (:name (local-&optional-recursive-inline :bug-1180992))
+(with-test (:name (:local-&optional-recursive-inline :bug-1180992))
   (compile nil
            `(lambda ()
               (labels ((called (&optional a))
@@ -4501,7 +4501,7 @@
 ;; be reported as mismatches with the value NIL.  Make sure we get
 ;; a warning, but that it doesn't complain about a constant NIL ...
 ;; of type FIXNUM.
-(with-test (:name (:multiple-use-lvar-interpreted-as-NIL cast))
+(with-test (:name (:multiple-use-lvar-interpreted-as-NIL :cast))
   (block nil
     (handler-bind ((sb-int:type-warning
                      (lambda (c)
@@ -4723,7 +4723,7 @@
 
 ;; win32 is very specific about the order in which catch blocks
 ;; must be allocated on the stack
-(with-test (:name :bug-121581169)
+(with-test (:name :bug-1072739)
   (let ((f (compile nil
                     `(lambda ()
                        (STRING=
@@ -4770,3 +4770,93 @@
                              G13908)))
                         "23a%b%")))))
     (assert (funcall f))))
+
+(with-test (:name :equal-equalp-transforms)
+  (let* ((s "foo")
+         (bit-vector #*11001100)
+         (values `(nil 1 2 "test"
+                       ;; Floats duplicated here to ensure we get newly created instances
+                       (read-from-string "1.1") (read-from-string "1.2d0")
+                       (read-from-string "1.1") (read-from-string "1.2d0")
+                       1.1 1.2d0 '("foo" "bar" "test")
+                       #(1 2 3 4) #*101010 (make-broadcast-stream) #p"/tmp/file"
+                       ,s (copy-seq ,s) ,bit-vector (copy-seq ,bit-vector)
+                       ,(make-hash-table) #\a #\b #\A #\C
+                       ,(make-random-state) 1/2 2/3)))
+    ;; Test all permutations of different types
+    (assert
+     (loop
+       for x in values
+       always (loop
+                for y in values
+                always
+                (and (eq (funcall (compile nil `(lambda (x y)
+                                                  (equal (the ,(type-of x) x)
+                                                         (the ,(type-of y) y))))
+                                  x y)
+                         (equal x y))
+                     (eq (funcall (compile nil `(lambda (x y)
+                                                  (equalp (the ,(type-of x) x)
+                                                          (the ,(type-of y) y))))
+                                  x y)
+                         (equalp x y))))))
+    (assert
+     (funcall (compile
+               nil
+               `(lambda (x y)
+                  (equal (the (cons (or simple-bit-vector simple-base-string))
+                              x)
+                         (the (cons (or (and bit-vector (not simple-array))
+                                        (simple-array character (*))))
+                              y))))
+              (list (string 'list))
+              (list "LIST")))
+    (assert
+     (funcall (compile
+               nil
+               `(lambda (x y)
+                  (equalp (the (cons (or simple-bit-vector simple-base-string))
+                               x)
+                          (the (cons (or (and bit-vector (not simple-array))
+                                         (simple-array character (*))))
+                               y))))
+              (list (string 'list))
+              (list "lisT")))))
+
+(with-test (:name (restart-case optimize speed compiler-note))
+  (handler-bind ((compiler-note #'error))
+    (compile nil '(lambda ()
+                   (declare (optimize speed))
+                   (restart-case () (c ()))))
+    (compile nil '(lambda ()
+                   (declare (optimize speed))
+                   (let (x)
+                     (restart-case (setf x (car (compute-restarts)))
+                       (c ()))
+                     x)))))
+
+(with-test (:name :copy-more-arg
+            :fails-on '(not (or :x86 :x86-64)))
+  ;; copy-more-arg might not copy in the right direction
+  ;; when there are more fixed args than stack frame slots,
+  ;; and thus end up splatting a single argument everywhere.
+  ;; Fixed on x86oids only, but other platforms still start
+  ;; their stack frames at 8 slots, so this is less likely
+  ;; to happen.
+  (let ((limit 33))
+    (labels ((iota (n)
+               (loop for i below n collect i))
+             (test-function (function skip)
+               ;; function should just be (subseq x skip)
+               (loop for i from skip below (+ skip limit) do
+                 (let* ((values (iota i))
+                        (f (apply function values))
+                        (subseq (subseq values skip)))
+                   (assert (equal f subseq)))))
+             (make-function (n)
+               (let ((gensyms (loop for i below n collect (gensym))))
+                 (compile nil `(lambda (,@gensyms &rest rest)
+                                 (declare (ignore ,@gensyms))
+                                 rest)))))
+      (dotimes (i limit)
+        (test-function (make-function i) i)))))
