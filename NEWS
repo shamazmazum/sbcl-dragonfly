@@ -1,4 +1,43 @@
 ;;;; -*- coding: utf-8; fill-column: 78 -*-
+changes in sbcl-1.1.13 relative to sbcl-1.1.12:
+  * optimization: better distribution of SXHASH over small conses of related
+    values.  (lp#309443)
+  * other improvements to SXHASH:
+    ** use the whole of the positive-fixnum range for SXHASH of fixnums
+  * enhancement: The error message when calling an undefined alien function
+    includes the name of the function on x86-64.
+  * enhancement: sb-ext:run-program now supports :environment on Windows.
+  * enhancement: ASDF is no longer required to load contribs at runtime.
+    (lp#1132254)
+  * enhancement: when called with a symbol, FIND-RESTART no longer calls
+    COMPUTE-RESTARTS, making it faster and cons less (lp#769615)
+  * enhancement: FIND-RESTART and COMPUTE-RESTARTS handle huge restart
+    clusters better in some cases
+  * enhancement: SOME/ANY/other quantification higher-order functions no
+    longer cons. (lp#1070635)
+  * bug fix: forward references to classes in fasls can now be loaded.
+    (lp#746132)
+  * bug fix: don't warn on a interpreted->compiled function redefinition
+    from the same location.  (patch by Douglas Katzman, lp#1042405)
+  * bug fix: Create vectors of proper internal length when reading literal
+    vectors from FASLs. (Reported by Jan Moringen)
+  * bug fix: COMPILE can now succefully compile setf functions.
+    (Reported by Douglas Katzman)
+  * bug fix: run-program performs more correct escaping of arguments on
+    Windows. (lp#1239242)
+  * bug fix: function-lambda-expression on generic functions returns the
+    actual name.
+  * bug fix: (the [type] [constant]) now warns when [constant] matches
+    [type] except for the number of values.  (Reported by Nathan Trapuzzano
+    on sbcl-help)
+  * bug fix: signal errors in required cases of slot-definition initialization
+    protocol.  (lp#309072)
+  * bug fix: run-sbcl.sh works better in the presence of symlinks on OS X.
+    (thanks to Stelian Ionescu, lp#1242643)
+  * bug fix: when given a restart object, FIND-RESTART checks whether the
+    restart is active and, when a condition is supplied, whether the restart
+    is associated to a different condition (lp#774410)
+
 changes in sbcl-1.1.12 relative to sbcl-1.1.11:
   * enhancement: Add sb-bsd-sockets:socket-shutdown, for calling
     shutdown(3). (thanks to Jan Moringen, lp#1207483)

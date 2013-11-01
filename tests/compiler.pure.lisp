@@ -4860,3 +4860,40 @@
                                  rest)))))
       (dotimes (i limit)
         (test-function (make-function i) i)))))
+
+(with-test (:name :apply-aref)
+  (flet ((test (form)
+           (let (warning)
+             (handler-bind ((warning (lambda (c) (setf warning c))))
+               (compile nil `(lambda (x y) (setf (apply #'sbit x y) 10))))
+             (assert (not warning)))))
+    (test `(lambda (x y) (setf (apply #'aref x y) 21)))
+    (test `(lambda (x y) (setf (apply #'bit x y) 1)))
+    (test `(lambda (x y) (setf (apply #'sbit x y) 0)))))
+
+(with-test (:name :warn-on-the-values-constant)
+  (multiple-value-bind (fun warnings-p failure-p)
+      (compile nil
+               ;; The compiler used to elide this test without
+               ;; noting that the type demands multiple values.
+               '(lambda () (the (values fixnum fixnum) 1)))
+    (declare (ignore warnings-p))
+    (assert (functionp fun))
+    (assert failure-p)))
+
+;; quantifiers shouldn't cons themselves.
+(with-test (:name :quantifiers-no-consing)
+  (let ((constantly-t (lambda (x) x t))
+        (constantly-nil (lambda (x) x nil))
+        (list (make-list 1000 :initial-element nil))
+        (vector (make-array 1000 :initial-element nil)))
+    (macrolet ((test (quantifier)
+                 (let ((function (make-symbol (format nil "TEST-~A" quantifier))))
+                   `(flet ((,function (function sequence)
+                             (,quantifier function sequence)))
+                      (ctu:assert-no-consing (,function constantly-t list))
+                      (ctu:assert-no-consing (,function constantly-nil vector))))))
+      (test some)
+      (test every)
+      (test notany)
+      (test notevery))))
