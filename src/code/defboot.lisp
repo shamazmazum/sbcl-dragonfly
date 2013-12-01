@@ -324,7 +324,7 @@ evaluated as a PROGN."
   evaluated before each evaluation of the body Forms. When the Test is true,
   the Exit-Forms are evaluated as a PROGN, with the result being the value
   of the DO. A block named NIL is established around the entire expansion,
-  allowing RETURN to be used as an laternate exit mechanism."
+  allowing RETURN to be used as an alternate exit mechanism."
   (frob-do-body varlist endlist body 'let* 'setq 'do* nil))
 
 ;;; DOTIMES and DOLIST could be defined more concisely using
@@ -440,13 +440,18 @@ evaluated as a PROGN."
            (unless (>= (length binding) 2)
              (error "ill-formed restart binding: ~S" binding))
            (destructuring-bind (name function
-                                &rest args
-                                &key report-function &allow-other-keys)
+                                &key interactive-function
+                                     test-function
+                                     report-function)
                binding
              (unless (or name report-function)
                (warn "Unnamed restart does not have a report function: ~
                       ~S" binding))
-             `(make-restart :name ',name :function ,function ,@args))))
+             `(make-restart ',name ,function
+                            ,report-function
+                            ,interactive-function
+                            ,@(and test-function
+                                   `(,test-function))))))
     `(let ((*restart-clusters*
              (cons (list ,@(mapcar #'parse-binding bindings))
                    *restart-clusters*)))
@@ -522,7 +527,7 @@ evaluated as a PROGN."
                              (return (values result form))))
                           result)))))
              (parse-clause (clause)
-               (unless (and (listp clause ) (>= (length clause) 2)
+               (unless (and (listp clause) (>= (length clause) 2)
                             (listp (second clause)))
                  (error "ill-formed ~S clause, no lambda-list:~%  ~S"
                         'restart-case clause))
@@ -531,18 +536,33 @@ evaluated as a PROGN."
                      (parse-keywords-and-body body)
                    (list name (sb!xc:gensym "TAG") keywords lambda-list body))))
              (make-binding (clause-data)
-               (destructuring-bind (name tag keywords &rest rest) clause-data
-                 (declare (ignore rest))
-                 `(,name #'(lambda (&rest temp)
-                             (setq ,temp-var temp)
-                             (locally (declare (optimize (safety 0)))
-                               (go ,tag)))
-                         ,@keywords)))
+               (destructuring-bind (name tag keywords lambda-list body) clause-data
+                 (declare (ignore body))
+                 `(,name
+                   (lambda ,(cond ((null lambda-list)
+                                   ())
+                                  ((and (null (cdr lambda-list))
+                                        (not (member (car lambda-list)
+                                                     '(&optional &key &aux))))
+                                   '(temp))
+                                  (t
+                                   '(&rest temp)))
+                     ,@(when lambda-list `((setq ,temp-var temp)))
+                     (locally (declare (optimize (safety 0)))
+                       (go ,tag)))
+                   ,@keywords)))
              (make-apply-and-return (clause-data)
                (destructuring-bind (name tag keywords lambda-list body) clause-data
                  (declare (ignore name keywords))
                  `(,tag (return-from ,block-tag
-                          (apply (lambda ,lambda-list ,@body) ,temp-var))))))
+                          ,(cond ((null lambda-list)
+                                  `(progn ,@body))
+                                 ((and (null (cdr lambda-list))
+                                       (not (member (car lambda-list)
+                                                    '(&optional &key &aux))))
+                                  `(funcall (lambda ,lambda-list ,@body) ,temp-var))
+                                 (t
+                                  `(apply (lambda ,lambda-list ,@body) ,temp-var))))))))
       (let ((clauses-data (mapcar #'parse-clause clauses)))
         `(block ,block-tag
            (let ((,temp-var nil))

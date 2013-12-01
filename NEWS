@@ -1,4 +1,33 @@
 ;;;; -*- coding: utf-8; fill-column: 78 -*-
+changes in sbcl-1.1.14 relative to sbcl-1.1.13:
+  * optimization: complicated TYPEP tests are less opaque to the type
+    propagation pass. (lp#1229340)
+  * optimization: [N]BUTLAST perform a single pass over the list. (lp#1245697)
+  * optimization: EQUALP on structures with raw slots (double-float/complex)
+    no longer conses and is faster.
+  * optimization: RESTART-CASE expands to more compact code.
+    Thanks to Jan Moringen. (lp#1249055)
+  * enhancement: Top-level defmethod without defgeneric no longer causes
+    undefined-function warnings in subsequent forms. (lp#503095)
+  * enhancement: Better error messages for system errors on Windows.
+  * enhancement: run-sbcl.sh is usefully handled by rlwrap.  Thanks to William
+    Cushing. (lp#1249183)
+  * enhancement: new function SB-EXT:ASSERT-VERSION->= accepts a version
+    specification (multiple integer arguments) and signals a continuable error
+    if the current SBCL version is lower (older) than the specification.
+    (lp#674372)
+  * enhancement: better ARRAY-RANK result derivation. (lp#1252108)
+  * bug fix: EQUALP now compares correctly structures with raw slots larger
+    than a single word.
+  * bug fix: contribs couldn't be built on Windows with MinGW.
+  * bug fix: Better pathname handling on Windows. (lp#922117)
+  * bug fix: OPEN reports a more meaningful error when an existing file is
+    opened for output with :if-exists :new-version.  Thanks to Philip
+    Munksgaard. (lp#455381)
+  * bug fix: DEFSTRUCTs with NIL as a slot name no longer cause strange
+    CLOS-related errors.  (lp#633911)
+  * bug fix: GC deadlocks caused by concurrent consing on Windows.
+
 changes in sbcl-1.1.13 relative to sbcl-1.1.12:
   * optimization: better distribution of SXHASH over small conses of related
     values.  (lp#309443)
@@ -21,7 +50,7 @@ changes in sbcl-1.1.13 relative to sbcl-1.1.12:
     from the same location.  (patch by Douglas Katzman, lp#1042405)
   * bug fix: Create vectors of proper internal length when reading literal
     vectors from FASLs. (Reported by Jan Moringen)
-  * bug fix: COMPILE can now succefully compile setf functions.
+  * bug fix: COMPILE can now successfully compile setf functions.
     (Reported by Douglas Katzman)
   * bug fix: run-program performs more correct escaping of arguments on
     Windows. (lp#1239242)

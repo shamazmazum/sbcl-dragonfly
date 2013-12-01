@@ -13,49 +13,12 @@
 
 #!-sb-fluid (declaim (freeze-type logical-pathname logical-host))
 
-;;;; PHYSICAL-HOST stuff
+;;; To be initialized in unix/win32-pathname.lisp
+(defvar *physical-host*)
 
-(def!struct (unix-host
-             (:make-load-form-fun make-unix-host-load-form)
-             (:include host
-                       (parse #'parse-unix-namestring)
-                       (parse-native #'parse-native-unix-namestring)
-                       (unparse #'unparse-unix-namestring)
-                       (unparse-native #'unparse-native-unix-namestring)
-                       (unparse-host #'unparse-unix-host)
-                       (unparse-directory #'unparse-physical-directory)
-                       (unparse-file #'unparse-unix-file)
-                       (unparse-enough #'unparse-unix-enough)
-                       (unparse-directory-separator "/")
-                       (simplify-namestring #'simplify-unix-namestring)
-                       (customary-case :lower))))
-(defvar *unix-host* (make-unix-host))
-(defun make-unix-host-load-form (host)
+(defun make-host-load-form (host)
   (declare (ignore host))
-  '*unix-host*)
-
-(def!struct (win32-host
-             (:make-load-form-fun make-win32-host-load-form)
-             (:include host
-                       (parse #'parse-win32-namestring)
-                       (parse-native #'parse-native-win32-namestring)
-                       (unparse #'unparse-win32-namestring)
-                       (unparse-native #'unparse-native-win32-namestring)
-                       (unparse-host #'unparse-win32-host)
-                       (unparse-directory #'unparse-physical-directory)
-                       (unparse-file #'unparse-win32-file)
-                       (unparse-enough #'unparse-win32-enough)
-                       (unparse-directory-separator "\\")
-                       (simplify-namestring #'simplify-win32-namestring)
-                       (customary-case :lower))))
-(defparameter *win32-host* (make-win32-host))
-(defun make-win32-host-load-form (host)
-  (declare (ignore host))
-  '*win32-host*)
-
-(defvar *physical-host*
-  #!-win32 *unix-host*
-  #!+win32 *win32-host*)
+  '*physical-host*)
 
 ;;; Return a value suitable, e.g., for preinitializing
 ;;; *DEFAULT-PATHNAME-DEFAULTS* before *DEFAULT-PATHNAME-DEFAULTS* is
@@ -278,7 +241,7 @@
                               (%pathname-name pathname2))
            (compare-component (%pathname-type pathname1)
                               (%pathname-type pathname2))
-           (or (eq (%pathname-host pathname1) *unix-host*)
+           (or (eq (%pathname-host pathname1) *physical-host*)
                (compare-component (%pathname-version pathname1)
                                   (%pathname-version pathname2))))))
 
@@ -490,15 +453,21 @@ the operating system native pathname conventions."
              (diddle-case
               (and default-host pathname-host
                    (not (eq (host-customary-case default-host)
-                            (host-customary-case pathname-host))))))
+                            (host-customary-case pathname-host)))))
+             (directory (merge-directories (%pathname-directory pathname)
+                                           (%pathname-directory defaults)
+                                           diddle-case)))
         (%make-maybe-logical-pathname
          (or pathname-host default-host)
-         (or (%pathname-device pathname)
-             (maybe-diddle-case (%pathname-device defaults)
-                                diddle-case))
-         (merge-directories (%pathname-directory pathname)
-                            (%pathname-directory defaults)
-                            diddle-case)
+         (and ;; The device of ~/ shouldn't be merged,
+              ;; because the expansion may have a different device
+              (not (and (>= (length directory) 2)
+                        (eql (car directory) :absolute)
+                        (eql (cadr directory) :home)))
+              (or (%pathname-device pathname)
+                  (maybe-diddle-case (%pathname-device defaults)
+                                     diddle-case)))
+         directory
          (or (%pathname-name pathname)
              (maybe-diddle-case (%pathname-name defaults)
                                 diddle-case))
@@ -1022,7 +991,7 @@ system's syntax for files."
                           &optional
                           (defaults *default-pathname-defaults*))
   #!+sb-doc
-  "Return an abbreviated pathname sufficent to identify the pathname relative
+  "Return an abbreviated pathname sufficient to identify the pathname relative
    to the defaults."
   (declare (type pathname-designator pathname))
   (with-pathname (pathname pathname)
@@ -1293,7 +1262,7 @@ unspecified elements into a completed to-pathname based on the to-wildname."
                (frob %pathname-directory translate-directories)
                (frob %pathname-name)
                (frob %pathname-type)
-               (if (eq from-host *unix-host*)
+               (if (eq from-host *physical-host*)
                    (if (or (eq (%pathname-version to) :wild)
                            (eq (%pathname-version to) nil))
                        (%pathname-version source)
@@ -1728,8 +1697,8 @@ is returned.
 The file should contain a single form, suitable for use with
 \(SETF LOGICAL-PATHNAME-TRANSLATIONS).
 
-Note: behaviour of this function is higly implementation dependent, and
-historically it used to be a no-op in SBcL -- the current approach is somewhat
+Note: behaviour of this function is highly implementation dependent, and
+historically it used to be a no-op in SBCL -- the current approach is somewhat
 experimental and subject to change."
   (declare (type string host)
            (values (member t nil)))

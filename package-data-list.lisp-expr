@@ -871,7 +871,10 @@ like *STACK-TOP-HINT* and unsupported stuff like *TRACED-FUN-LIST*."
                #!+sb-simd-pack "%SIMD-PACK-UB32S"
                #!+sb-simd-pack "%SIMD-PACK-UB64S"
                #!+sb-simd-pack "%SIMD-PACK-DOUBLES"
-               #!+sb-simd-pack "%SIMD-PACK-SINGLES"))
+               #!+sb-simd-pack "%SIMD-PACK-SINGLES"
+
+               ;; versioning utility
+               "ASSERT-VERSION->="))
 
    #s(sb-cold:package-data
       :name "SB!FORMAT"
@@ -907,7 +910,7 @@ Lisp extension proposal by David N. Gray"
       :doc
       "private: miscellaneous unsupported extensions to the ANSI spec. Much of
 the stuff in here originated in CMU CL's EXTENSIONS package and is retained,
-possibly temporariliy, because it might be used internally."
+possibly temporarily, because it might be used internally."
       :use ("CL" "SB!ALIEN" "SB!GRAY" "SB!FASL" "SB!SYS")
       :export (;; lambda list keyword extensions
                "&MORE"
@@ -2046,7 +2049,7 @@ is a good idea, but see SB-SYS re. blurring of boundaries."
                "THREAD-ERROR"
                "THREAD-ERROR-THREAD"
                "THREAD-ALIVE-P"
-               "THREAD-EMPHEMERAL-P"
+               "THREAD-EPHEMERAL-P"
                "THREAD-NAME"
                "THREAD-YIELD"
                "FOREIGN-THREAD"
@@ -2379,6 +2382,7 @@ SB-KERNEL) have been undone, but probably more remain."
                "*PERIODIC-POLLING-PERIOD*"
                "*RUNTIME-DLHANDLE*"
                "*SHARED-OBJECTS*"
+               #!-sb-dynamic-core
                "*STATIC-FOREIGN-SYMBOLS*"
                "*STDERR*" "*STDIN*"
                "*STDOUT*"
@@ -2924,7 +2928,7 @@ SBCL itself"
                "FILE-TRUNCATE-EXISTING"
                "FLUSH-CONSOLE-INPUT-BUFFER"
                "FLUSH-VIEW-OF-FILE"
-               "FORMAT-MESSAGE"
+               "FORMAT-SYSTEM-MESSAGE"
                "GET-FILE-ATTRIBUTES"
                "GET-FILE-SIZE-EX"
                "GET-FILE-TYPE"

@@ -162,7 +162,6 @@
 ;;;; from the "Symbols" chapter:
 
 (defknown get (symbol t &optional t) t (flushable))
-(defknown sb!impl::get2 (symbol t) t (flushable))
 (defknown sb!impl::get3 (symbol t t) t (flushable))
 (defknown remprop (symbol t) t)
 (defknown symbol-plist (symbol) list (flushable))
@@ -839,8 +838,6 @@
 (defknown hash-table-p (t) boolean (movable foldable flushable))
 (defknown gethash (t hash-table &optional t) (values t boolean)
   (flushable)) ; not FOLDABLE, since hash table contents can change
-(defknown sb!impl::gethash2 (t hash-table) (values t boolean)
-  (flushable)) ; not FOLDABLE, since hash table contents can change
 (defknown sb!impl::gethash3 (t hash-table t) (values t boolean)
   (flushable)) ; not FOLDABLE, since hash table contents can change
 (defknown %puthash (t hash-table t) t ()
@@ -1478,6 +1475,9 @@
   (movable flushable explicit-check))
 (defknown %instance-typep (t (or type-specifier ctype)) boolean
   (movable flushable explicit-check always-translatable))
+;;; We should never emit a call to %typep-wrapper
+(defknown %typep-wrapper (t t (or type-specifier ctype)) t
+  (movable flushable always-translatable))
 
 (defknown %cleanup-point () t)
 (defknown %special-bind (t t) t)

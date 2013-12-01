@@ -251,37 +251,44 @@
 ;;; "A lie can travel halfway round the world while the truth is
 ;;; putting on its shoes." -- Mark Twain
 
-(eval-when (#-sb-xc :compile-toplevel :load-toplevel :execute)
+;; information about how a slot of a given DSD-RAW-TYPE is to be accessed
+(defstruct (raw-slot-data
+            (:copier nil)
+            (:predicate nil))
+  ;; the raw slot type, or T for a non-raw slot
+  ;;
+  ;; (Non-raw slots are in the ordinary place you'd expect, directly
+  ;; indexed off the instance pointer.  Raw slots are indexed from the end
+  ;; of the instance and skipped by GC.)
+  (raw-type (missing-arg) :type (or symbol cons) :read-only t)
+  ;; What operator is used to access a slot of this type?
+  (accessor-name (missing-arg) :type symbol :read-only t)
+  (init-vop (missing-arg) :type symbol :read-only t)
+  ;; How many words are each value of this type?
+  (n-words (missing-arg) :type (and index (integer 1)) :read-only t)
+  ;; Necessary alignment in units of words.  Note that instances
+  ;; themselves are aligned by exactly two words, so specifying more
+  ;; than two words here would not work.
+  (alignment 1 :type (integer 1 2) :read-only t)
+  (comparer (missing-arg) :type function :read-only t))
 
-  ;; information about how a slot of a given DSD-RAW-TYPE is to be accessed
-  (defstruct raw-slot-data
-    ;; the raw slot type, or T for a non-raw slot
-    ;;
-    ;; (Non-raw slots are in the ordinary place you'd expect, directly
-    ;; indexed off the instance pointer.  Raw slots are indexed from the end
-    ;; of the instance and skipped by GC.)
-    (raw-type (missing-arg) :type (or symbol cons) :read-only t)
-    ;; What operator is used to access a slot of this type?
-    (accessor-name (missing-arg) :type symbol :read-only t)
-    (init-vop (missing-arg) :type symbol :read-only t)
-    ;; How many words are each value of this type?
-    (n-words (missing-arg) :type (and index (integer 1)) :read-only t)
-    ;; Necessary alignment in units of words.  Note that instances
-    ;; themselves are aligned by exactly two words, so specifying more
-    ;; than two words here would not work.
-    (alignment 1 :type (integer 1 2) :read-only t))
-
-  (defvar *raw-slot-data-list*
+(defvar *raw-slot-data-list*
+  (macrolet ((make-comparer (accessor-name)
+               `(lambda (index x y)
+                  (declare (optimize speed (safety 0)))
+                  (= (,accessor-name x index)
+                     (,accessor-name y index)))))
     (let ((double-float-alignment
-           ;; white list of architectures that can load unaligned doubles:
-           #!+(or x86 x86-64 ppc) 1
-           ;; at least sparc, mips and alpha can't:
-           #!-(or x86 x86-64 ppc) 2))
+            ;; white list of architectures that can load unaligned doubles:
+            #!+(or x86 x86-64 ppc) 1
+            ;; at least sparc, mips and alpha can't:
+            #!-(or x86 x86-64 ppc) 2))
       (list
        (make-raw-slot-data :raw-type 'sb!vm:word
                            :accessor-name '%raw-instance-ref/word
                            :init-vop 'sb!vm::raw-instance-init/word
-                           :n-words 1)
+                           :n-words 1
+                           :comparer (make-comparer %raw-instance-ref/word))
        (make-raw-slot-data :raw-type 'single-float
                            :accessor-name '%raw-instance-ref/single
                            :init-vop 'sb!vm::raw-instance-init/single
@@ -295,31 +302,38 @@
                            ;; would really benefit is (UNSIGNED-BYTE
                            ;; 32), but that is a subtype of FIXNUM, so
                            ;; we store it unraw anyway.  :-( -- DFL
-                           :n-words 1)
+                           :n-words 1
+                           :comparer (make-comparer %raw-instance-ref/single))
        (make-raw-slot-data :raw-type 'double-float
                            :accessor-name '%raw-instance-ref/double
                            :init-vop 'sb!vm::raw-instance-init/double
                            :alignment double-float-alignment
-                           :n-words (/ 8 sb!vm:n-word-bytes))
+                           :n-words (/ 8 sb!vm:n-word-bytes)
+                           :comparer (make-comparer %raw-instance-ref/double))
        (make-raw-slot-data :raw-type 'complex-single-float
                            :accessor-name '%raw-instance-ref/complex-single
                            :init-vop 'sb!vm::raw-instance-init/complex-single
-                           :n-words (/ 8 sb!vm:n-word-bytes))
+                           :n-words (/ 8 sb!vm:n-word-bytes)
+                           :comparer (make-comparer %raw-instance-ref/complex-single))
        (make-raw-slot-data :raw-type 'complex-double-float
                            :accessor-name '%raw-instance-ref/complex-double
                            :init-vop 'sb!vm::raw-instance-init/complex-double
                            :alignment double-float-alignment
-                           :n-words (/ 16 sb!vm:n-word-bytes))
+                           :n-words (/ 16 sb!vm:n-word-bytes)
+                           :comparer (make-comparer %raw-instance-ref/complex-double))
        #!+long-float
        (make-raw-slot-data :raw-type long-float
                            :accessor-name '%raw-instance-ref/long
                            :init-vop 'sb!vm::raw-instance-init/long
-                           :n-words #!+x86 3 #!+sparc 4)
+                           :n-words #!+x86 3 #!+sparc 4
+                           :comparer (make-comparer %raw-instance-ref/long))
        #!+long-float
        (make-raw-slot-data :raw-type complex-long-float
                            :accessor-name '%raw-instance-ref/complex-long
                            :init-vop 'sb!vm::raw-instance-init/complex-long
-                           :n-words #!+x86 6 #!+sparc 8)))))
+                           :n-words #!+x86 6 #!+sparc 8
+                           :comparer (make-comparer %raw-instance-ref/complex-long))))))
+
 (defun raw-slot-words (type)
   (let ((rsd (find type *raw-slot-data-list* :key #'raw-slot-data-raw-type)))
     (if rsd
@@ -610,7 +624,6 @@
 ;;; Given name and options, return a DD holding that info.
 (defun parse-defstruct-name-and-options (name-and-options)
   (destructuring-bind (name &rest options) name-and-options
-    (aver name) ; A null name doesn't seem to make sense here.
     (let ((dd (make-defstruct-description name))
           (predicate-named-p nil))
       (dolist (option options)
@@ -679,19 +692,29 @@
   (multiple-value-bind (name default default-p type type-p read-only ro-p)
       (typecase spec
         (symbol
-         (when (keywordp spec)
-           (style-warn "Keyword slot name indicates probable syntax ~
-                        error in DEFSTRUCT: ~S."
-                       spec))
+         (typecase spec
+           ((or null (member :conc-name :constructor :copier :predicate :named))
+            (warn "slot name of ~S indicates probable syntax error in DEFSTRUCT" spec))
+           (keyword
+            (style-warn "slot name of ~S indicates possible syntax error in DEFSTRUCT" spec)))
          spec)
         (cons
          (destructuring-bind
-               (name
-                &optional (default nil default-p)
-                &key (type nil type-p) (read-only nil ro-p))
+               (name &optional (default nil default-p)
+                     &key (type nil type-p) (read-only nil ro-p))
              spec
-           (values name
-                   default default-p
+           (when (dd-conc-name defstruct)
+             ;; the warning here is useful, but in principle we cannot
+             ;; distinguish between legitimate and erroneous use of
+             ;; these names when :CONC-NAME is NIL.  In the common
+             ;; case (CONC-NAME non-NIL), there are alternative ways
+             ;; of writing code with the same effect, so a full
+             ;; warning is justified.
+             (typecase name
+               ((member :conc-name :constructor :copier :predicate :include
+                        :print-function :print-object :type :initial-offset :pure)
+                (warn "slot name of ~S indicates probable syntax error in DEFSTRUCT" name))))
+           (values name default default-p
                    (uncross type) type-p
                    read-only ro-p)))
         (t (error 'simple-program-error

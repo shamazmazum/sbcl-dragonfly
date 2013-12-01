@@ -308,12 +308,12 @@
                    (pathname-host pathname)
                    (sane-default-pathname-defaults)
                    :as-directory (eq :directory kind)))
-                 (fail "couldn't resolve ~A" filename
-                       (- (sb!win32:get-last-error))))))
+                 (fail (format nil "Failed to find the ~A of ~~A" query-for) filename
+                       (sb!win32:get-last-error)))))
           (:write-date
            (or (sb!win32::native-file-write-date filename)
-               (fail "couldn't query write date of ~A" filename
-                     (- (sb!win32:get-last-error))))))
+               (fail (format nil "Failed to find the ~A of ~~A" query-for) filename
+                       (sb!win32:get-last-error)))))
         #!-win32
         (multiple-value-bind (existsp errno ino mode nlink uid gid rdev size
                                       atime mtime)
@@ -390,7 +390,7 @@
                              (:write-date (+ unix-to-universal-time mtime))))))
                      ;; If we're still here, the file doesn't exist; error.
                      (fail
-                      (format nil "failed to find the ~A of ~~A" query-for)
+                      (format nil "Failed to find the ~A of ~~A" query-for)
                       pathspec errno)))
             (if existsp
                 (case query-for
@@ -485,7 +485,7 @@ file, then the associated file is renamed."
   "Delete the specified FILE.
 
 If FILE is a stream, on Windows the stream is closed immediately. On Unix
-plaforms the stream remains open, allowing IO to continue: the OS resources
+platforms the stream remains open, allowing IO to continue: the OS resources
 associated with the deleted file remain available till the stream is closed as
 per standard Unix unlink() behaviour."
   (let* ((pathname (translate-logical-pathname
@@ -497,7 +497,7 @@ per standard Unix unlink() behaviour."
     (multiple-value-bind (res err)
         #!-win32 (sb!unix:unix-unlink namestring)
         #!+win32 (or (sb!win32::native-delete-file namestring)
-                     (values nil (- (sb!win32:get-last-error))))
+                     (values nil (sb!win32:get-last-error)))
         (unless res
           (simple-file-perror "couldn't delete ~A" namestring err))))
   t)
@@ -556,7 +556,7 @@ exist or if is a file or a symbolic link."
                  (multiple-value-bind (res errno)
                      #!+win32
                      (or (sb!win32::native-delete-directory namestring)
-                         (values nil (- (sb!win32:get-last-error))))
+                         (values nil (sb!win32:get-last-error)))
                      #!-win32
                      (values
                       (not (minusp (alien-funcall
@@ -579,19 +579,26 @@ exist or if is a file or a symbolic link."
     ;; SBCL_HOME isn't set for :EXECUTABLE T embedded cores
     (when (and sbcl-home (not (string= sbcl-home "")))
       (parse-native-namestring sbcl-home
-                               #!-win32 sb!impl::*unix-host*
-                               #!+win32 sb!impl::*win32-host*
+                               *physical-host*
                                *default-pathname-defaults*
                                :as-directory t))))
 
 (defun user-homedir-namestring (&optional username)
-  (if username
-      (sb!unix:user-homedir username)
-      (let ((env-home (posix-getenv "HOME")))
-        (if (and env-home (not (string= env-home "")))
-            env-home
+  (flet ((not-empty (x)
+           (and (not (equal x "")) x)))
+    (if username
+        (sb!unix:user-homedir username)
+        (or (not-empty (posix-getenv "HOME"))
+            #!+win32
+            (not-empty (posix-getenv "USERPROFILE"))
+            #!+win32
+            (let ((drive (not-empty (posix-getenv "HOMEDRIVE")))
+                  (path (not-empty (posix-getenv "HOMEPATH"))))
+              (and drive path
+                   (concatenate 'string drive path)))
             #!-win32
-            (sb!unix:uid-homedir (sb!unix:unix-getuid))))))
+            (not-empty (sb!unix:uid-homedir (sb!unix:unix-getuid)))
+            (error "Couldn't find home directory.")))))
 
 ;;; (This is an ANSI Common Lisp function.)
 (defun user-homedir-pathname (&optional host)
@@ -606,8 +613,7 @@ system. HOST argument is ignored by SBCL."
     (or (user-homedir-namestring)
         #!+win32
         (sb!win32::get-folder-namestring sb!win32::csidl_profile))
-    #!-win32 sb!impl::*unix-host*
-    #!+win32 sb!impl::*win32-host*
+    *physical-host*
     *default-pathname-defaults*
     :as-directory t)))
 

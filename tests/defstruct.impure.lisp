@@ -710,6 +710,12 @@
   c
   (a 0d0 :type double-float))
 
+(defstruct raw-slot-equalp-bug-2
+  (b (complex 1d0) :type (complex double-float))
+  (x (complex 1d0) :type (complex double-float))
+  c
+  (a 1s0 :type single-float))
+
 (with-test (:name :raw-slot-equalp)
   (assert (equalp (make-raw-slot-equalp-bug :a 1d0 :b 2s0)
                   (make-raw-slot-equalp-bug :a 1d0 :b 2s0)))
@@ -718,7 +724,15 @@
   (assert (not (equalp (make-raw-slot-equalp-bug :a 1d0 :b 2s0)
                        (make-raw-slot-equalp-bug :a 1d0 :b 3s0))))
   (assert (not (equalp (make-raw-slot-equalp-bug :a 1d0 :b 2s0)
-                       (make-raw-slot-equalp-bug :a 2d0 :b 2s0)))))
+                       (make-raw-slot-equalp-bug :a 2d0 :b 2s0))))
+  (assert (equalp (make-raw-slot-equalp-bug-2 :b (complex 1d0) :a 2s0)
+                  (make-raw-slot-equalp-bug-2 :b (complex 1d0) :a 2s0)))
+  (assert (equalp (make-raw-slot-equalp-bug-2 :b (complex 1d0) :a 0s0)
+                  (make-raw-slot-equalp-bug-2 :b (complex 1d0) :a -0s0)))
+  (assert (not (equalp (make-raw-slot-equalp-bug-2 :b (complex 1d0) :a 2s0)
+                       (make-raw-slot-equalp-bug-2 :b (complex 1d0) :a 3s0))))
+  (assert (not (equalp (make-raw-slot-equalp-bug-2 :b (complex 1d0) :a 2s0)
+                       (make-raw-slot-equalp-bug-2 :b (complex 2d0) :a 2s0)))))
 
 ;;; Check that all slot types (non-raw and raw) can be initialized with
 ;;; constant arguments.
@@ -1127,7 +1141,7 @@ redefinition."
   (let ((sb-ext:*evaluator-mode* :compile))
     (handler-bind ((warning #'error))
      (eval `(let ()
-              (defstruct destruct-no-warning-not-at-toplevel bar))))))
+              (defstruct defstruct-no-warning-not-at-toplevel bar))))))
 
 (with-test (:name :bug-941102)
   (let ((test `((defstruct bug-941102)
@@ -1139,3 +1153,8 @@ redefinition."
     (multiple-value-bind (warn2 fail2) (ctu:file-compile test)
       (assert (not warn2))
       (assert (not fail2)))))
+
+(with-test (:name (defstruct :constant-slot-names))
+  (defstruct defstruct-constant-slot-names t)
+  (assert (= 3 (defstruct-constant-slot-names-t
+                (make-defstruct-constant-slot-names :t 3)))))

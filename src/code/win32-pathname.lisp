@@ -11,6 +11,24 @@
 
 (in-package "SB!IMPL")
 
+(def!struct (win32-host
+             (:make-load-form-fun make-host-load-form)
+             (:include host
+                       (parse #'parse-win32-namestring)
+                       (parse-native #'parse-native-win32-namestring)
+                       (unparse #'unparse-win32-namestring)
+                       (unparse-native #'unparse-native-win32-namestring)
+                       (unparse-host #'unparse-win32-host)
+                       (unparse-directory #'unparse-physical-directory)
+                       (unparse-file #'unparse-win32-file)
+                       (unparse-enough #'unparse-win32-enough)
+                       (unparse-directory-separator "\\")
+                       (simplify-namestring #'simplify-win32-namestring)
+                       (customary-case :lower))))
+
+(defvar *physical-host* (make-win32-host))
+
+;;;
 (define-symbol-macro +long-file-name-prefix+ (quote "\\\\?\\"))
 (define-symbol-macro +unc-file-name-prefix+ (quote "\\\\?\\UNC"))
 
@@ -273,17 +291,26 @@
          (ecase (pop directory)
            (:absolute
             (let ((next (pop directory)))
+              ;; Don't use USER-HOMEDIR-NAMESTRING, since
+              ;; it can be specified as C:/User/user
+              ;; and (native-namestring (user-homedir-pathname))
+              ;; will be not equal to it, because it's parsed first.
               (cond ((eq :home next)
-                     (write-string (user-homedir-namestring) s))
+                     (write-string (native-namestring (user-homedir-pathname))
+                                   s))
                     ((and (consp next) (eq :home (car next)))
-                     (let ((where (user-homedir-namestring (second next))))
+                     (let ((where (user-homedir-pathname (second next))))
                        (if where
-                           (write-string where s)
+                           (write-string (native-namestring where) s)
                            (error "User homedir unknown for: ~S"
                                   (second next)))))
+                    ;; namestring of user-homedir-pathname already has
+                    ;; // at the end
                     (next
-                     (push next directory)))
-              (write-char #\\ s)))
+                     (write-char #\\ s)
+                     (push next directory))
+                    (t
+                     (write-char #\\ s)))))
            (:relative)))
        (loop for (piece . subdirs) on directory
              do (typecase piece
@@ -306,7 +333,7 @@
                  (error "ungood type component in NATIVE-NAMESTRING: ~S" type))
                (write-char #\. s)
                (write-string type-string s)))
-           (when type-present-p ;
+           (when type-present-p
              (error
               "type component without a name component in NATIVE-NAMESTRING: ~S"
               type)))
