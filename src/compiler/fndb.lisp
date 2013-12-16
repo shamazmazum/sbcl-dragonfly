@@ -485,6 +485,11 @@
   ()
   :derive-type (creation-result-type-specifier-nth-arg 1))
 
+(defknown %concatenate-to-string (&rest sequence) simple-string
+  (explicit-check flushable))
+(defknown %concatenate-to-base-string (&rest sequence) simple-base-string
+  (explicit-check flushable))
+
 (defknown (map %map) (type-specifier callable sequence &rest sequence)
   consed-sequence
   (call)
@@ -870,7 +875,20 @@
                       (:fill-pointer t)
                       (:displaced-to (or array null))
                       (:displaced-index-offset index))
-  array (flushable))
+  array (flushable explicit-check))
+
+(defknown %make-array ((or index list)
+                       (unsigned-byte #.sb!vm:n-widetag-bits)
+                       (unsigned-byte 16)
+                       &key
+                       (:element-type type-specifier)
+                       (:initial-element t)
+                       (:initial-contents t)
+                       (:adjustable t)
+                       (:fill-pointer t)
+                       (:displaced-to (or array null))
+                       (:displaced-index-offset index))
+    array (flushable))
 
 (defknown vector (&rest t) simple-vector (flushable))
 

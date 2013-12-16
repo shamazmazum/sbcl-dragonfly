@@ -1,4 +1,25 @@
 ;;;; -*- coding: utf-8; fill-column: 78 -*-
+changes relative to sbcl-1.1.14:
+  * new feature: the iterative spilling/coloring register allocator developed
+    by Alexandra Barchunova during Google Summer of Code 2013 is now merged
+    in.  By default, it only activates for functions that optimize with
+    (speed 3) and (> speed compilation-speed), but setting
+    sb-regalloc:*register-allocation-method* to :iterative forces its
+    execution.  The previous behaviour can be obtained by instead setting that
+    variable to :greedy.  Thanks again to Google for their support, and, more
+    crucially, to Alexandra Barchunova for her hard work.
+  * optimization: make-array with known element-type and unkown dimensions is
+    much faster.
+  * enhancement: sb-ext:save-lisp-and-die on Windows now accepts
+    :application-type argument, which can be :console or :gui. :gui allows
+    having GUI applications without an automatically appearing console window.
+  * bug fix: Windows applications without the console window no longer misbehave.
+    (patch by Wilfredo Velazquez, lp#1256034).
+  * bug fix: modular arithmetic optimizations do not stumble on dead branches
+    with bad constants. (reported by Douglas Katzman)
+  * bug fix: CLISP can be used again as a cross-compilation host.
+    (Thanks to Vasily Postnicov)
+
 changes in sbcl-1.1.14 relative to sbcl-1.1.13:
   * optimization: complicated TYPEP tests are less opaque to the type
     propagation pass. (lp#1229340)

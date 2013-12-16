@@ -438,16 +438,15 @@ Works on all CASable places."
              finally (return (car ,old))))))
 
 (defun split-version-string (string)
-  (loop with start = 0
-        for cont = (or (= start 0)
-                       (char= #\. (elt string (1- start))))
-        for version-part = (multiple-value-bind (version-part new-start)
-                               (parse-integer string :start start :junk-allowed t)
-                             (setq start
-                                   (min (1+ new-start) (length string)))
-                             version-part)
-        while (and version-part cont)
-        collect version-part))
+  (loop with subversion and start = 0
+        with end = (length string)
+        when (setf (values subversion start)
+                   (parse-integer string :start start :junk-allowed t))
+        collect it
+        while (and subversion
+                   (< start end)
+                   (char= (char string start) #\.))
+        do (incf start)))
 
 (defun version>= (x y)
   (unless (or x y)
