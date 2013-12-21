@@ -48,8 +48,8 @@
         (sb-conflicts (finite-sb-conflicts sb))
         (sb-always-live (finite-sb-always-live sb)))
     (macrolet ((do-offsets ((var) &body body)
-                 `(loop repeat size
-                        for ,var upfrom offset
+                 `(loop for ,var upfrom offset
+                        repeat size
                         thereis (progn ,@body))))
       (cond
         ((eq kind :component)
