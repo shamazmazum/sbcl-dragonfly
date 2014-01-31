@@ -120,7 +120,7 @@
                   ;; assuming that the upgraded-element-type should be
                   ;; equal to T, given the way that the AREF
                   ;; DERIVE-TYPE optimizer works.  -- CSR, 2002-08-19
-                  (unknown-type-p eltype))
+                  (contains-unknown-type-p eltype))
               *wild-type*
               (dolist (stype-name *specialized-array-element-types*
                                   *universal-type*)
@@ -140,10 +140,17 @@
   "Return the element type that will actually be used to implement an array
    with the specifier :ELEMENT-TYPE Spec."
   (declare (ignore environment))
-  (if (unknown-type-p (specifier-type spec))
-      (error "undefined type: ~S" spec)
-      (type-specifier (array-type-specialized-element-type
-                       (specifier-type `(array ,spec))))))
+  (handler-case
+      ;; Can't rely on SPECIFIER-TYPE to signal PARSE-UNKNOWN-TYPE in
+      ;; the case of (AND KNOWN UNKNOWN), since the result of the
+      ;; outter call to SPECIFIER-TYPE can be cached by the code that
+      ;; doesn't catch PARSE-UNKNOWN-TYPE signal.
+      (if (contains-unknown-type-p (specifier-type spec))
+          (error "Undefined type: ~S" spec)
+          (type-specifier (array-type-specialized-element-type
+                           (specifier-type `(array ,spec)))))
+    (parse-unknown-type (c)
+      (error "Undefined type: ~S" (parse-unknown-type-specifier c)))))
 
 (defun sb!xc:upgraded-complex-part-type (spec &optional environment)
   #!+sb-doc

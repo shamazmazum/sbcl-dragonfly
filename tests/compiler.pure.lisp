@@ -3281,7 +3281,20 @@
     (ctu:assert-no-consing (funcall f))))
 
 (with-test (:name :array-type-predicates)
-  (dolist (et sb-kernel::*specialized-array-element-types*)
+  (dolist (et (list* '(integer -1 200) '(integer -256 1)
+                     '(integer 0 128)
+                     '(integer 0 (128))
+                     '(double-float 0d0 (1d0))
+                     '(single-float (0s0) (1s0))
+                     '(or (eql 1d0) (eql 10d0))
+                     '(member 1 2 10)
+                     '(complex (member 10 20))
+                     '(complex (member 10d0 20d0))
+                     '(complex (member 10s0 20s0))
+                     '(or integer double-float)
+                     '(mod 1)
+                     #+sb-unicode 'extended-char
+                     sb-kernel::*specialized-array-element-types*))
     (when et
       (let* ((v (make-array 3 :element-type et))
              (fun (compile nil `(lambda ()
@@ -4957,3 +4970,13 @@
                      (when (= (array-rank a) 3)
                        (array-dimension a 2)))))))
     (assert noted)))
+
+(with-test (:name :upgraded-array-element-type-undefined-type)
+  (raises-error? (upgraded-array-element-type 'an-undefined-type))
+  (raises-error? (upgraded-array-element-type '(and fixnum an-undefined-type)))
+  (compile nil '(lambda ()
+                 (make-array 10
+                  :element-type '(or null an-undefined-type))))
+  (compile nil '(lambda ()
+                 (make-array '(10 10)
+                  :element-type '(or null an-undefined-type)))))

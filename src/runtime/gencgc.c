@@ -200,10 +200,6 @@ static inline boolean page_boxed_p(page_index_t page) {
     return (page_table[page].allocated & BOXED_PAGE_FLAG);
 }
 
-static inline boolean code_page_p(page_index_t page) {
-    return (page_table[page].allocated & CODE_PAGE_FLAG);
-}
-
 static inline boolean page_boxed_no_region_p(page_index_t page) {
     return page_boxed_p(page) && page_no_region_p(page);
 }
@@ -2049,7 +2045,7 @@ search_dynamic_space(void *pointer)
  * address) which should prevent us from moving the referred-to thing?
  * This is called from preserve_pointers() */
 static int
-possibly_valid_dynamic_space_pointer(lispobj *pointer)
+possibly_valid_dynamic_space_pointer(lispobj *pointer, page_index_t addr_page_index)
 {
     lispobj *start_addr;
 
@@ -2058,10 +2054,68 @@ possibly_valid_dynamic_space_pointer(lispobj *pointer)
         return 0;
     }
 
+    /* If the containing object is a code object, presume that the
+     * pointer is valid, simply because it could be an unboxed return
+     * address. */
+    if (widetag_of(*start_addr) == CODE_HEADER_WIDETAG)
+        return 1;
+
+    /* Large object pages only contain ONE object, and it will never
+     * be a CONS.  However, arrays and bignums can be allocated larger
+     * than necessary and then shrunk to fit, leaving what look like
+     * (0 . 0) CONSes at the end.  These appear valid to
+     * looks_like_valid_lisp_pointer_p(), so pick them off here. */
+    if (page_table[addr_page_index].large_object &&
+        (lowtag_of((lispobj)pointer) == LIST_POINTER_LOWTAG))
+        return 0;
+
     return looks_like_valid_lisp_pointer_p(pointer, start_addr);
 }
 
 #endif  // defined(LISP_FEATURE_X86) || defined(LISP_FEATURE_X86_64)
+
+static int
+valid_conservative_root_p(void *addr, page_index_t addr_page_index)
+{
+#ifdef GENCGC_IS_PRECISE
+    /* If we're in precise gencgc (non-x86oid as of this writing) then
+     * we are only called on valid object pointers in the first place,
+     * so we just have to do a bounds-check against the heap, a
+     * generation check, and the already-pinned check. */
+    if ((addr_page_index == -1)
+        || (page_table[addr_page_index].gen != from_space)
+        || (page_table[addr_page_index].dont_move != 0))
+        return 0;
+#else
+    /* quick check 1: Address is quite likely to have been invalid. */
+    if ((addr_page_index == -1)
+        || page_free_p(addr_page_index)
+        || (page_table[addr_page_index].bytes_used == 0)
+        || (page_table[addr_page_index].gen != from_space)
+        /* Skip if already marked dont_move. */
+        || (page_table[addr_page_index].dont_move != 0))
+        return 0;
+    gc_assert(!(page_table[addr_page_index].allocated&OPEN_REGION_PAGE_FLAG));
+
+    /* quick check 2: Check the offset within the page.
+     *
+     */
+    if (((uword_t)addr & (GENCGC_CARD_BYTES - 1)) >
+        page_table[addr_page_index].bytes_used)
+        return 0;
+
+    /* Filter out anything which can't be a pointer to a Lisp object
+     * (or, as a special case which also requires dont_move, a return
+     * address referring to something in a CodeObject). This is
+     * expensive but important, since it vastly reduces the
+     * probability that random garbage will be bogusly interpreted as
+     * a pointer which prevents a page from moving. */
+    if (!possibly_valid_dynamic_space_pointer(addr, addr_page_index))
+        return 0;
+#endif
+
+    return 1;
+}
 
 /* Adjust large bignum and vector objects. This will adjust the
  * allocated region if the size has shrunk, and move unboxed objects
@@ -2250,42 +2304,12 @@ preserve_pointer(void *addr)
     page_index_t i;
     unsigned int region_allocation;
 
-    /* quick check 1: Address is quite likely to have been invalid. */
-    if ((addr_page_index == -1)
-        || page_free_p(addr_page_index)
-        || (page_table[addr_page_index].bytes_used == 0)
-        || (page_table[addr_page_index].gen != from_space)
-        /* Skip if already marked dont_move. */
-        || (page_table[addr_page_index].dont_move != 0))
+    if (!valid_conservative_root_p(addr, addr_page_index))
         return;
-    gc_assert(!(page_table[addr_page_index].allocated&OPEN_REGION_PAGE_FLAG));
+
     /* (Now that we know that addr_page_index is in range, it's
      * safe to index into page_table[] with it.) */
     region_allocation = page_table[addr_page_index].allocated;
-
-    /* quick check 2: Check the offset within the page.
-     *
-     */
-    if (((uword_t)addr & (GENCGC_CARD_BYTES - 1)) >
-        page_table[addr_page_index].bytes_used)
-        return;
-
-    /* Filter out anything which can't be a pointer to a Lisp object
-     * (or, as a special case which also requires dont_move, a return
-     * address referring to something in a CodeObject). This is
-     * expensive but important, since it vastly reduces the
-     * probability that random garbage will be bogusly interpreted as
-     * a pointer which prevents a page from moving.
-     *
-     * This only needs to happen on x86oids, where this is used for
-     * conservative roots.  Non-x86oid systems only ever call this
-     * function on known-valid lisp objects. */
-#if defined(LISP_FEATURE_X86) || defined(LISP_FEATURE_X86_64)
-    if (!(code_page_p(addr_page_index)
-          || (is_lisp_pointer((lispobj)addr) &&
-              possibly_valid_dynamic_space_pointer(addr))))
-        return;
-#endif
 
     /* Find the beginning of the region.  Note that there may be
      * objects in the region preceding the one that we were passed a
@@ -2310,21 +2334,6 @@ preserve_pointer(void *addr)
     /* Adjust any large objects before promotion as they won't be
      * copied after promotion. */
     if (page_table[first_page].large_object) {
-        /* Large objects (specifically vectors and bignums) can
-         * shrink, leaving a "tail" of zeroed space, which appears to
-         * the filter above as a seris of valid conses, both car and
-         * cdr of which contain the fixnum zero, but will be
-         * deallocated when the GC shrinks the large object region to
-         * fit the object within.  We allow raw pointers within code
-         * space, but for boxed and unboxed space we do not, nor do
-         * pointers to within a non-code object appear valid above.  A
-         * cons cell will never merit allocation to a large object
-         * page, so pick them off now, before we try to adjust the
-         * object. */
-        if ((lowtag_of((lispobj)addr) == LIST_POINTER_LOWTAG) &&
-            !code_page_p(first_page)) {
-            return;
-        }
         maybe_adjust_large_object(page_address(first_page));
         /* It may have moved to unboxed pages. */
         region_allocation = page_table[first_page].allocated;
@@ -2952,7 +2961,7 @@ verify_space(lispobj *start, size_t words)
                  *   FIXME: Add a variable to enable this
                  * dynamically. */
                 /*
-                if (!possibly_valid_dynamic_space_pointer((lispobj *)thing)) {
+                if (!possibly_valid_dynamic_space_pointer((lispobj *)thing, page_index)) {
                     lose("ptr %p to invalid object %p\n", thing, start);
                 }
                 */
