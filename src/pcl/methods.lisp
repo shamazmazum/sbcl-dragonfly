@@ -1632,9 +1632,10 @@
 ;;; identity of the function bound to a name, which breaks anything
 ;;; class-based, so we implement the encapsulation ourselves in the
 ;;; discriminating function.
-(defun sb-impl::encapsulate-generic-function (gf type body)
-  (push (cons type body) (generic-function-encapsulations gf))
+(defun sb-impl::encapsulate-generic-function (gf type function)
+  (push (cons type function) (generic-function-encapsulations gf))
   (reinitialize-instance gf))
+
 (defun sb-impl::unencapsulate-generic-function (gf type)
   (setf (generic-function-encapsulations gf)
         (remove type (generic-function-encapsulations gf)
@@ -1642,20 +1643,22 @@
   (reinitialize-instance gf))
 (defun sb-impl::encapsulated-generic-function-p (gf type)
   (position type (generic-function-encapsulations gf) :key #'car))
-(defun standard-compute-discriminating-function-with-encapsulations (gf encs)
+(defun maybe-encapsulate-discriminating-function (gf encs std)
   (if (null encs)
-      (standard-compute-discriminating-function gf)
-      (let ((inner (standard-compute-discriminating-function-with-encapsulations
-                    gf (cdr encs)))
-            (body (cdar encs)))
-        (lambda (&rest args)
-          (let ((sb-int:arg-list args)
-                (sb-int:basic-definition inner))
+      std
+      (let ((inner (maybe-encapsulate-discriminating-function
+                    gf (cdr encs) std))
+            (function (cdar encs)))
+        (lambda (&rest sb-int:arg-list)
+          (declare (special sb-int:arg-list))
+          (let ((sb-int:basic-definition inner))
             (declare (special sb-int:arg-list sb-int:basic-definition))
-            (eval body))))))
+            (funcall function))))))
 (defmethod compute-discriminating-function ((gf standard-generic-function))
-  (standard-compute-discriminating-function-with-encapsulations
-   gf (generic-function-encapsulations gf)))
+  (standard-compute-discriminating-function gf))
+(defmethod compute-discriminating-function :around ((gf standard-generic-function))
+  (maybe-encapsulate-discriminating-function
+   gf (generic-function-encapsulations gf) (call-next-method)))
 
 (defmethod (setf class-name) (new-value class)
   (let ((classoid (wrapper-classoid (class-wrapper class))))

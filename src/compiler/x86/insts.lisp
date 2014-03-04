@@ -481,10 +481,6 @@
   (op  :field (byte 3 5))
   (dir :field (byte 1 4)))
 
-(sb!disassem:define-instruction-format (two-bytes 16
-                                        :default-printer '(:name))
-  (op :fields (list (byte 8 0) (byte 8 8))))
-
 (sb!disassem:define-instruction-format (reg-reg/mem 16
                                         :default-printer
                                         `(:name :tab reg ", " reg/mem))
@@ -1243,6 +1239,15 @@
      (emit-byte segment (if (eq size :byte) #b10110000 #b10110001))
      (emit-ea segment dst (reg-tn-encoding src)))))
 
+(define-instruction cmpxchg8b (segment mem &optional prefix)
+  (:printer ext-reg-reg/mem-no-width ((op #xC7)) '(:name :tab reg/mem))
+  (:emitter
+   (aver (not (register-p mem)))
+   (emit-prefix segment prefix)
+   (emit-byte segment #x0F)
+   (emit-byte segment #xC7)
+   (emit-ea segment mem 1)))
+
 (define-instruction pause (segment)
   (:printer two-bytes ((op '(#xf3 #x90))))
   (:emitter
@@ -1583,56 +1588,25 @@
       (when immed
         (emit-byte segment amount)))))
 
-(eval-when (:compile-toplevel :execute)
-  (defun shift-inst-printer-list (subop)
-    `((reg/mem ((op (#b1101000 ,subop)))
-               (:name :tab reg/mem ", 1"))
-      (reg/mem ((op (#b1101001 ,subop)))
-               (:name :tab reg/mem ", " 'cl))
-      (reg/mem-imm ((op (#b1100000 ,subop))
-                    (imm nil :type signed-imm-byte))))))
+(sb!disassem:define-instruction-format
+    (shift-inst 16 :include 'reg/mem
+     :default-printer '(:name :tab reg/mem ", " (:if (varying :positive) 'cl 1)))
+  (op :fields (list (byte 6 2) (byte 3 11)))
+  (varying :field (byte 1 1)))
 
-(define-instruction rol (segment dst amount)
-  (:printer-list
-   (shift-inst-printer-list #b000))
-  (:emitter
-   (emit-shift-inst segment dst amount #b000)))
-
-(define-instruction ror (segment dst amount)
-  (:printer-list
-   (shift-inst-printer-list #b001))
-  (:emitter
-   (emit-shift-inst segment dst amount #b001)))
-
-(define-instruction rcl (segment dst amount)
-  (:printer-list
-   (shift-inst-printer-list #b010))
-  (:emitter
-   (emit-shift-inst segment dst amount #b010)))
-
-(define-instruction rcr (segment dst amount)
-  (:printer-list
-   (shift-inst-printer-list #b011))
-  (:emitter
-   (emit-shift-inst segment dst amount #b011)))
-
-(define-instruction shl (segment dst amount)
-  (:printer-list
-   (shift-inst-printer-list #b100))
-  (:emitter
-   (emit-shift-inst segment dst amount #b100)))
-
-(define-instruction shr (segment dst amount)
-  (:printer-list
-   (shift-inst-printer-list #b101))
-  (:emitter
-   (emit-shift-inst segment dst amount #b101)))
-
-(define-instruction sar (segment dst amount)
-  (:printer-list
-   (shift-inst-printer-list #b111))
-  (:emitter
-   (emit-shift-inst segment dst amount #b111)))
+(macrolet ((define (name subop)
+             `(define-instruction ,name (segment dst amount)
+                (:printer shift-inst ((op '(#b110100 ,subop)))) ; shift by CL or 1
+                (:printer reg/mem-imm ((op '(#b1100000 ,subop))
+                                       (imm nil :type 'imm-byte)))
+                (:emitter (emit-shift-inst segment dst amount ,subop)))))
+  (define rol #b000)
+  (define ror #b001)
+  (define rcl #b010)
+  (define rcr #b011)
+  (define shl #b100)
+  (define shr #b101)
+  (define sar #b111))
 
 (defun emit-double-shift (segment opcode dst src amt)
   (let ((size (matching-operand-size dst src)))
@@ -2131,10 +2105,10 @@
 
 (define-instruction break (segment code)
   (:declare (type (unsigned-byte 8) code))
-  #!-ud2-breakpoints (:printer byte-imm ((op #b11001100)) '(:name :tab code)
-                               :control #'break-control)
-  #!+ud2-breakpoints (:printer word-imm ((op #b0000101100001111)) '(:name :tab code)
-                               :control #'break-control)
+  #!-ud2-breakpoints (:printer byte-imm ((op #b11001100))
+                               '(:name :tab code) :control #'break-control)
+  #!+ud2-breakpoints (:printer word-imm ((op #b0000101100001111))
+                               '(:name :tab code) :control #'break-control)
   (:emitter
    #!-ud2-breakpoints (emit-byte segment #b11001100)
    ;; On darwin, trap handling via SIGTRAP is unreliable, therefore we

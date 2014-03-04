@@ -331,6 +331,10 @@
                     (make-pathname :name "foo" :type "txt" :version 1)
                     (make-pathname :name "foo" :type ".txt")
                     (make-pathname :name "foo." :type "txt")
+                    (make-pathname :name "\\" :type "txt")
+                    (make-pathname :name "^" :type "txt")
+                    (make-pathname :name "foo*" :type "txt")
+                    (make-pathname :name "foo[" :type "txt")
                     (parse-namestring "SCRATCH:FOO.TXT.1")
                     (parse-namestring "SCRATCH:FOO.TXT.NEWEST")
                     (parse-namestring "SCRATCH:FOO.TXT"))))
@@ -618,5 +622,13 @@
            (assert (probe-file deep)))
       (sb-ext:delete-directory shallow :recursive t))
     (assert (not (probe-file shallow)))))
+
+#+unix
+(with-test (:name :simplify-namestring)
+  (assert (string= (sb-int:simplify-namestring "./a/b/../c/")
+                   "a/c/")))
+
+(with-test (:name :back-and-truename)
+  (probe-file (make-pathname :directory '(:absolute "a" "b" :back))))
 
 ;;;; success

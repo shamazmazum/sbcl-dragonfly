@@ -1,4 +1,28 @@
 ;;;; -*- coding: utf-8; fill-column: 78 -*-
+changes in sbcl-1.1.16 relative to sbcl-1.1.15:
+  * minor incompatible change: improve read/print consistency for pathnames on
+    Win32, by using the circumflex character #\^ as the escape character.
+    (lp#673625)
+  * enhancement: SB-EXT:DEFINE-LOAD-TIME-GLOBAL. (lp#1253688)
+  * enhancement: Loading fasls with symbols from an undefined package includes
+    the name of the symbol in the error message.
+  * bug fix: problems when redefining classes and doing TYPEP on classes
+    concurrently. (lp#1272742)
+  * bug fixes to the x86-64 XCHG instruction:
+    ** it was misencoded when used with RAX, R8-R15 registers. (reported by
+       Eric Marsden)
+    ** it was misencoded when used to exchange EAX with itself.
+    ** the disassembler wrongly printed XCHG RAX, R8 and the corresponding
+       32- and 16-bit variations as NOP.
+  * bug fix: the disassembler outputs source annotations in the right place
+    and no longer randomly drops some of them. (lp#1249205)
+  * bug fix: fix commutative-arg-swap from introducing undumpable structures
+    into code, prevent code with errors from being compiled. (lp#1276282)
+  * bug fix: pathnames with :back in their directory component are succeffully
+    resolved.
+  * bug fix: the deterministic profiler now uses ENCAPSULATE functionality to
+    wrap functions around. (lp#309086)
+
 changes in sbcl-1.1.15 relative to sbcl-1.1.14:
   * new feature: the iterative spilling/coloring register allocator developed
     by Alexandra Barchunova during Google Summer of Code 2013 is now merged

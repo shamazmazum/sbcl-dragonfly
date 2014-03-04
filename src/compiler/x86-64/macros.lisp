@@ -158,6 +158,12 @@
 (defun allocation-dynamic-extent (alloc-tn size lowtag)
   (inst sub rsp-tn size)
   ;; see comment in x86/macros.lisp implementation of this
+  ;; However that comment seems inapplicable here because:
+  ;; - PAD-DATA-BLOCK quite clearly enforces double-word alignment,
+  ;;   contradicting "... unfortunately not enforced by ..."
+  ;; - It's not the job of WITH-FIXED-ALLOCATION to realign anything.
+  ;; - The real issue is that it's not obvious that the stack is
+  ;;   16-byte-aligned at *all* times. Maybe it is, maybe it isn't.
   (inst and rsp-tn #.(lognot lowtag-mask))
   (aver (not (location= alloc-tn rsp-tn)))
   (inst lea alloc-tn (make-ea :byte :base rsp-tn :disp lowtag))
@@ -167,12 +173,17 @@
 ;;; which should also cover subsequent initialization of the
 ;;; object.
 (defun allocation-tramp (alloc-tn size lowtag)
-  (inst push size)
+  (cond ((typep size '(and integer (not (signed-byte 32))))
+         ;; MOV accepts large immediate operands, PUSH does not
+         (inst mov alloc-tn size)
+         (inst push alloc-tn))
+        (t
+         (inst push size)))
   (inst mov alloc-tn (make-fixup "alloc_tramp" :foreign))
   (inst call alloc-tn)
   (inst pop alloc-tn)
   (when lowtag
-    (inst lea alloc-tn (make-ea :byte :base alloc-tn :disp lowtag)))
+    (inst or (reg-in-size alloc-tn :byte) lowtag))
   (values))
 
 (defun allocation (alloc-tn size &optional ignored dynamic-extent lowtag)
@@ -204,19 +215,31 @@
          (make-ea :qword
                   :scale 1 :disp
                   (make-fixup "boxed_region" :foreign 8))))
-    (cond (in-elsewhere
+    (cond ((or in-elsewhere
+               #!+gencgc
+               ;; large objects will never be made in a per-thread region
+               (and (integerp size)
+                    ;; Kludge: this is supposed to be
+                    ;;  (>= size (extern-alien "large_object_size" long))
+                    ;; but that won't cross-compile. So, a little OAOOM...
+                    (>= size (* 4 (max *backend-page-bytes* gencgc-card-bytes
+                                       gencgc-alloc-granularity)))))
            (allocation-tramp alloc-tn size lowtag))
           (t
            (inst mov temp-reg-tn free-pointer)
-           (if (tn-p size)
-               (if (location= alloc-tn size)
-                   (inst add alloc-tn temp-reg-tn)
-                   (inst lea alloc-tn
-                         (make-ea :qword :base temp-reg-tn :index size)))
-               (inst lea alloc-tn
-                     (make-ea :qword :base temp-reg-tn :disp size)))
-           (inst cmp end-addr alloc-tn)
-           (inst jmp :be NOT-INLINE)
+           (cond ((tn-p size)
+                  (if (location= alloc-tn size)
+                      (inst add alloc-tn temp-reg-tn)
+                      (inst lea alloc-tn
+                            (make-ea :qword :base temp-reg-tn :index size))))
+                 ((typep size '(signed-byte 31))
+                  (inst lea alloc-tn
+                        (make-ea :qword :base temp-reg-tn :disp size)))
+                 (t ; a doozy - 'disp' in an EA is too small for this size
+                  (inst mov alloc-tn temp-reg-tn)
+                  (inst add alloc-tn (constantize size))))
+           (inst cmp alloc-tn end-addr)
+           (inst jmp :g NOT-INLINE)
            (inst mov free-pointer alloc-tn)
            (if lowtag
                (inst lea alloc-tn (make-ea :byte :base temp-reg-tn :disp lowtag))

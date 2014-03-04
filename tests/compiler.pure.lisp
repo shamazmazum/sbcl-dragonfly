@@ -3905,6 +3905,21 @@
                    nil
                    '((:ordinary . ordinary-lambda-list))))))
 
+;; This test failed formerly because the source transform of TYPEP would be
+;; disabled when storing coverage data, thus giving no semantics to
+;; expressions such as (TYPEP x 'INTEGER). The compiler could therefore not
+;; prove that the else clause of the IF is unreachable - which it must be
+;; since X is asserted to be fixnum. The conflicting requirement on X
+;; that it be acceptable to LENGTH signaled a full warning.
+;; Nobody on sbcl-devel could remember why the source transform was disabled,
+;; but nobody disagreed with undoing the disabling.
+(with-test (:name :sb-cover-and-typep)
+  (multiple-value-bind (fun warnings-p failure-p)
+      (compile nil '(lambda (x)
+                     (declare (fixnum x) (optimize sb-c:store-coverage-data))
+                     (if (typep x 'integer) x (length x))))
+    (assert (and fun (not warnings-p) (not failure-p)))))
+
 (with-test (:name :member-on-long-constant-list)
   ;; This used to blow stack with a sufficiently long list.
   (let ((cycle (list t)))
@@ -4980,3 +4995,36 @@
   (compile nil '(lambda ()
                  (make-array '(10 10)
                   :element-type '(or null an-undefined-type)))))
+
+(with-test (:name :xchg-misencoding)
+  (assert (eql (funcall (compile nil '(lambda (a b)
+                                       (declare (optimize (speed 3) (safety 2))
+                                        (type single-float a))
+                                       (unless (eql b 1/2)
+                                         (min a -1f0))))
+                        0f0 1)
+               -1f0)))
+
+(with-test (:name :malformed-declare)
+  (multiple-value-bind (fun warnings-p failure-p)
+      (compile nil '(lambda (x)
+                     (declare (unsigned-byte (x)))
+                     x))
+    (assert (and fun warnings-p failure-p))))
+
+(with-test (:name :no-dubious-asterisk-warning)
+  (multiple-value-bind (fun warnings-p failure-p)
+      (compile
+       nil
+       '(lambda (foo)
+         (macrolet ((frob-some-stuff (&rest exprs)
+                      (let ((temps
+                             (mapcar
+                              (lambda (x)
+                                (if (symbolp x) (copy-symbol x) (gensym)))
+                              exprs)))
+                        `(let ,(mapcar #'list temps exprs)
+                           (if (and ,@temps)
+                               (format t "Got~@{ ~S~^ and~}~%" ,@temps))))))
+           (frob-some-stuff *print-base* (car foo)))))
+    (assert (and fun (not warnings-p) (not failure-p)))))

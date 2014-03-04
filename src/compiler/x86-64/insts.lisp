@@ -156,7 +156,7 @@
            (type sb!disassem:disassem-state dstate))
   (if (typep value 'full-reg)
       (print-reg-with-width value width stream dstate)
-      (print-mem-access value width sized-p stream dstate)))
+      (print-mem-ref (if sized-p :sized-ref :ref) value width stream dstate)))
 
 ;;; Print a register or a memory reference. The width is determined by
 ;;; calling INST-OPERAND-SIZE.
@@ -219,7 +219,7 @@
            (type sb!disassem:disassem-state dstate))
   (if (typep value 'xmmreg)
       (print-xmmreg value stream dstate)
-    (print-mem-access value nil nil stream dstate)))
+      (print-mem-ref :ref value nil stream dstate)))
 
 ;;; This prefilter is used solely for its side effects, namely to put
 ;;; the bits found in the REX prefix into the DSTATE for use by other
@@ -237,6 +237,21 @@
   (when (plusp (logand value #b0001))
     (sb!disassem:dstate-put-inst-prop dstate 'rex-b))
   value)
+
+;;; The two following prefilters are used instead of prefilter-wrxb when
+;;; the bits of the REX prefix need to be treated individually. They are
+;;; always used together, so only the first one sets the REX property.
+(defun prefilter-rex-w (value dstate)
+  (declare (type bit value)
+           (type sb!disassem:disassem-state dstate))
+  (sb!disassem:dstate-put-inst-prop dstate 'rex)
+  (when (plusp value)
+    (sb!disassem:dstate-put-inst-prop dstate 'rex-w)))
+(defun prefilter-rex-b (value dstate)
+  (declare (type bit value)
+           (type sb!disassem:disassem-state dstate))
+  (when (plusp value)
+    (sb!disassem:dstate-put-inst-prop dstate 'rex-b)))
 
 ;;; This prefilter is used solely for its side effect, namely to put
 ;;; the property OPERAND-SIZE-8 into the DSTATE if VALUE is 0.
@@ -283,27 +298,22 @@
 (defun prefilter-reg/mem (value dstate)
   (declare (type list value)
            (type sb!disassem:disassem-state dstate))
-  (let ((mod (first value))
-        (r/m (second value)))
-    (declare (type (unsigned-byte 2) mod)
-             (type (unsigned-byte 3) r/m))
-    (let ((full-reg (if (sb!disassem:dstate-get-inst-prop dstate 'rex-b)
-                        (+ r/m 8)
-                        r/m)))
-      (declare (type full-reg full-reg))
+  (flet ((extend (bit-name reg)
+           (logior (if (sb!disassem:dstate-get-inst-prop dstate bit-name) 8 0)
+                   reg)))
+    (declare (inline extend))
+    (let* ((mod (the (unsigned-byte 2) (first value)))
+           (r/m (the (unsigned-byte 3) (second value)))
+           (full-reg (extend 'rex-b r/m)))
       (cond ((= mod #b11)
              ;; registers
              full-reg)
-            ((= r/m #b100)
-             ;; sib byte
-             (let ((sib (sb!disassem:read-suffix 8 dstate)))
-               (declare (type (unsigned-byte 8) sib))
-               (let ((base-reg (ldb (byte 3 0) sib))
-                     (index-reg (ldb (byte 3 3) sib))
-                     (index-scale (ldb (byte 2 6) sib)))
-                 (declare (type (unsigned-byte 3) base-reg index-reg)
-                          (type (unsigned-byte 2) index-scale))
-                 (let* ((offset
+            ((= r/m #b100) ; SIB byte - rex.b is "don't care"
+             (let* ((sib (the (unsigned-byte 8)
+                              (sb!disassem:read-suffix 8 dstate)))
+                    (base-reg (ldb (byte 3 0) sib))
+                    (index-reg (extend 'rex-x (ldb (byte 3 3) sib)))
+                    (offset
                          (case mod
                                (#b00
                                 (if (= base-reg #b101)
@@ -313,24 +323,20 @@
                                 (sb!disassem:read-signed-suffix 8 dstate))
                                (#b10
                                 (sb!disassem:read-signed-suffix 32 dstate)))))
-                   (list (unless (and (= mod #b00) (= base-reg #b101))
-                           (if (sb!disassem:dstate-get-inst-prop dstate 'rex-b)
-                               (+ base-reg 8)
-                               base-reg))
-                         offset
-                         (unless (= index-reg #b100)
-                           (if (sb!disassem:dstate-get-inst-prop dstate 'rex-x)
-                               (+ index-reg 8)
-                               index-reg))
-                         (ash 1 index-scale))))))
+               (list (unless (and (= mod #b00) (= base-reg #b101))
+                       (extend 'rex-b base-reg))
+                     offset
+                     (unless (= index-reg #b100) index-reg) ; index can't be RSP
+                     (ash 1 (ldb (byte 2 6) sib)))))
+            ;; rex.b is not decoded in determining RIP-relative mode
             ((and (= mod #b00) (= r/m #b101))
              (list 'rip (sb!disassem:read-signed-suffix 32 dstate)))
             ((= mod #b00)
              (list full-reg))
             ((= mod #b01)
-           (list full-reg (sb!disassem:read-signed-suffix 8 dstate)))
-          (t                            ; (= mod #b10)
-           (list full-reg (sb!disassem:read-signed-suffix 32 dstate)))))))
+             (list full-reg (sb!disassem:read-signed-suffix 8 dstate)))
+            (t                            ; (= mod #b10)
+             (list full-reg (sb!disassem:read-signed-suffix 32 dstate)))))))
 
 (defun read-address (value dstate)
   (declare (ignore value))              ; always nil anyway
@@ -350,9 +356,14 @@
 
 ;;;; disassembler argument types
 
-;;; Used to capture the lower four bits of the REX prefix.
+;;; Used to capture the lower four bits of the REX prefix all at once ...
 (sb!disassem:define-arg-type wrxb
   :prefilter #'prefilter-wrxb)
+;;; ... or individually (not needed for REX.R and REX.X).
+(sb!disassem:define-arg-type rex-w
+  :prefilter #'prefilter-rex-w)
+(sb!disassem:define-arg-type rex-b
+  :prefilter #'prefilter-rex-b)
 
 (sb!disassem:define-arg-type width
   :prefilter #'prefilter-width
@@ -397,7 +408,7 @@
 
 ;;; Normally, immediate values for an operand size of :qword are of size
 ;;; :dword and are sign-extended to 64 bits. For an exception, see the
-;;; argument type definition following this one.
+;;; argument type definition of SIGNED-IMM-DATA-UPTO-QWORD below.
 (sb!disassem:define-arg-type signed-imm-data
   :prefilter (lambda (value dstate)
                (declare (ignore value)) ; always nil anyway
@@ -618,6 +629,19 @@
   (accum :type 'accum)
   (imm))
 
+;;; This is reg-no-width with a mandatory REX prefix and accum field,
+;;; with the ability to match against REX.W and REX.B individually.
+;;; REX.R and REX.X are ignored.
+(sb!disassem:define-instruction-format (rex-accum-reg 16
+                                       :default-printer
+                                       '(:name :tab accum ", " reg))
+  (rex   :field (byte 4 4) :value #b0100)
+  (rex-w :field (byte 1 3) :type 'rex-w)
+  (rex-b :field (byte 1 0) :type 'rex-b)
+  (op    :field (byte 5 11))
+  (reg   :field (byte 3 8) :type 'reg-b)
+  (accum :type 'accum))
+
 ;;; Same as reg-no-width, but with a default operand size of :qword.
 (sb!disassem:define-instruction-format (reg-no-width-default-qword 8
                                         :include 'reg-no-width
@@ -647,10 +671,6 @@
   ;; optional fields
   (accum   :type 'accum)
   (imm))
-
-(sb!disassem:define-instruction-format (two-bytes 16
-                                        :default-printer '(:name))
-  (op :fields (list (byte 8 0) (byte 8 8))))
 
 (sb!disassem:define-instruction-format (reg-reg/mem 16
                                         :default-printer
@@ -1410,10 +1430,9 @@
          (let ((ss (1- (integer-length scale)))
                (index (if (null index)
                           #b100
-                          (let ((index (reg-tn-encoding index)))
-                            (if (= index #b100)
-                                (error "can't index off of ESP")
-                                index))))
+                          (if (location= index rsp-tn)
+                              (error "can't index off of RSP")
+                              (reg-tn-encoding index))))
                (base (if (null base)
                          #b101
                          (reg-tn-encoding base))))
@@ -1758,7 +1777,8 @@
   ;; immediate to register
   (:printer reg ((op #b1011) (imm nil :type 'signed-imm-data/asm-routine))
             '(:name :tab reg ", " imm))
-  (:printer rex-reg ((op #b1011) (imm nil :type 'signed-imm-data-upto-qword/asm-routine))
+  (:printer rex-reg ((op #b1011)
+                     (imm nil :type 'signed-imm-data-upto-qword/asm-routine))
             '(:name :tab reg ", " imm))
   ;; absolute mem to/from accumulator
   (:printer simple-dir ((op #b101000) (imm nil :type 'imm-addr))
@@ -1796,7 +1816,8 @@
                               (if (eq size :byte)
                                   #b10001010
                                   #b10001011))
-                   (emit-ea segment src (reg-tn-encoding dst) :allow-constants t))))
+                   (emit-ea segment src (reg-tn-encoding dst)
+                            :allow-constants t))))
            ((integerp src)
             ;; C7 only deals with 32 bit immediates even if the
             ;; destination is a 64-bit location. The value is
@@ -1942,7 +1963,36 @@
             (emit-byte segment #b10001111)
             (emit-ea segment dst #b000))))))
 
+;;; Compared to x86 we need to take two particularities into account
+;;; here:
+;;; * XCHG EAX, EAX can't be encoded as #x90 as the processor interprets
+;;;   that opcode as NOP while XCHG EAX, EAX is specified to clear the
+;;;   upper half of RAX. We need to use the long form #x87 #xC0 instead.
+;;; * The opcode #x90 is not only used for NOP and XCHG RAX, RAX and
+;;;   XCHG AX, AX, but also for XCHG RAX, R8 (and the corresponding 32-
+;;;   and 16-bit versions). The printer for the NOP instruction (further
+;;;   below) matches all these encodings so needs to be overridden here
+;;;   for the cases that need to print as XCHG.
+;;; Assembler and disassembler chained then map these special cases as
+;;; follows:
+;;;   (INST NOP)                 ->  90      ->  NOP
+;;;   (INST XCHG RAX-TN RAX-TN)  ->  4890    ->  NOP
+;;;   (INST XCHG EAX-TN EAX-TN)  ->  87C0    ->  XCHG EAX, EAX
+;;;   (INST XCHG AX-TN AX-TN)    ->  6690    ->  NOP
+;;;   (INST XCHG RAX-TN R8-TN)   ->  4990    ->  XCHG RAX, R8
+;;;   (INST XCHG EAX-TN R8D-TN)  ->  4190    ->  XCHG EAX, R8D
+;;;   (INST XCHG AX-TN R8W-TN)   ->  664190  ->  XCHG AX, R8W
+;;; The disassembler additionally correctly matches encoding variants
+;;; that the assembler doesn't generate, for example 4E90 prints as NOP
+;;; and 4F90 as XCHG RAX, R8 (both because REX.R and REX.X are ignored).
 (define-instruction xchg (segment operand1 operand2)
+  ;; This printer matches all patterns that encode exchanging RAX with
+  ;; R8, EAX with R8D, or AX with R8W. These consist of the opcode #x90
+  ;; with a REX prefix with REX.B = 1, and possibly the #x66 prefix.
+  ;; We rely on the prefix automatism for the #x66 prefix, but
+  ;; explicitly match the REX prefix as we need to provide a value for
+  ;; REX.B, and to override the NOP printer by virtue of a longer match.
+  (:printer rex-accum-reg ((rex-b 1) (op #b10010) (reg #b000)))
   ;; Register with accumulator.
   (:printer reg-no-width ((op #b10010)) '(:name :tab accum ", " reg))
   ;; Register/Memory with Register.
@@ -1951,9 +2001,13 @@
    (let ((size (matching-operand-size operand1 operand2)))
      (maybe-emit-operand-size-prefix segment size)
      (labels ((xchg-acc-with-something (acc something)
-                (if (and (not (eq size :byte)) (register-p something))
+                (if (and (not (eq size :byte))
+                         (register-p something)
+                         ;; Don't use the short encoding for XCHG EAX, EAX:
+                         (not (and (= (tn-offset something) eax-offset)
+                                   (eq size :dword))))
                     (progn
-                      (maybe-emit-rex-for-ea segment acc something)
+                      (maybe-emit-rex-for-ea segment something acc)
                       (emit-byte-with-reg segment
                                           #b10010
                                           (reg-tn-encoding something)))
@@ -1973,8 +2027,21 @@
              (t
               (error "bogus args to XCHG: ~S ~S" operand1 operand2)))))))
 
+;; The printer for LEA's r/m field indicates to PRINT-MEM-REF that this is an
+;; EA calculation, not a memory access. The ELSE branch should never execute,
+;; but is robust in allowing display of invalid instructions like LEA RAX,RBX.
+;; A further improvement would use a labeller so that entry points
+;; to local functions get labeled.
 (define-instruction lea (segment dst src)
-  (:printer reg-reg/mem ((op #b1000110) (width 1)))
+  (:printer reg-reg/mem
+            ((op #b1000110) (width 1)
+             (reg/mem nil
+              :printer
+              (lambda (value stream dstate)
+                (let ((width (inst-operand-size dstate)))
+                  (if (listp value)
+                      (print-mem-ref :compute value width stream dstate)
+                      (print-reg-with-width value width stream dstate)))))))
   (:emitter
    (aver (or (dword-reg-p dst) (qword-reg-p dst)))
    (maybe-emit-rex-for-ea segment src dst
@@ -1994,6 +2061,16 @@
      (emit-byte segment #b00001111)
      (emit-byte segment (if (eq size :byte) #b10110000 #b10110001))
      (emit-ea segment dst (reg-tn-encoding src)))))
+
+(define-instruction cmpxchg16b (segment mem &optional prefix)
+  (:printer ext-reg-reg/mem-no-width ((op #xC7)) '(:name :tab reg/mem))
+  (:emitter
+   (aver (not (register-p mem)))
+   (emit-prefix segment prefix)
+   (maybe-emit-rex-for-ea segment mem nil :operand-size :qword)
+   (emit-byte segment #x0F)
+   (emit-byte segment #xC7)
+   (emit-ea segment mem 1))) ; operand extension
 
 
 ;;;; flag control instructions
@@ -2097,14 +2174,16 @@
                  (dpb opcode
                       (byte 3 3)
                       (if (eq size :byte) #b00000000 #b00000001)))
-      (emit-ea segment dst (reg-tn-encoding src) :allow-constants allow-constants))
+      (emit-ea segment dst (reg-tn-encoding src)
+               :allow-constants allow-constants))
      ((register-p dst)
       (maybe-emit-rex-for-ea segment src dst)
       (emit-byte segment
                  (dpb opcode
                       (byte 3 3)
                       (if (eq size :byte) #b00000010 #b00000011)))
-      (emit-ea segment src (reg-tn-encoding dst) :allow-constants allow-constants))
+      (emit-ea segment src (reg-tn-encoding dst)
+               :allow-constants allow-constants))
      (t
       (error "bogus operands to ~A" name)))))
 
@@ -2318,56 +2397,25 @@
       (when immed
         (emit-byte segment amount)))))
 
-(eval-when (:compile-toplevel :execute)
-  (defun shift-inst-printer-list (subop)
-    `((reg/mem ((op (#b1101000 ,subop)))
-               (:name :tab reg/mem ", 1"))
-      (reg/mem ((op (#b1101001 ,subop)))
-               (:name :tab reg/mem ", " 'cl))
-      (reg/mem-imm ((op (#b1100000 ,subop))
-                    (imm nil :type imm-byte))))))
+(sb!disassem:define-instruction-format
+    (shift-inst 16 :include 'reg/mem
+     :default-printer '(:name :tab reg/mem ", " (:if (varying :positive) 'cl 1)))
+  (op :fields (list (byte 6 2) (byte 3 11)))
+  (varying :field (byte 1 1)))
 
-(define-instruction rol (segment dst amount)
-  (:printer-list
-   (shift-inst-printer-list #b000))
-  (:emitter
-   (emit-shift-inst segment dst amount #b000)))
-
-(define-instruction ror (segment dst amount)
-  (:printer-list
-   (shift-inst-printer-list #b001))
-  (:emitter
-   (emit-shift-inst segment dst amount #b001)))
-
-(define-instruction rcl (segment dst amount)
-  (:printer-list
-   (shift-inst-printer-list #b010))
-  (:emitter
-   (emit-shift-inst segment dst amount #b010)))
-
-(define-instruction rcr (segment dst amount)
-  (:printer-list
-   (shift-inst-printer-list #b011))
-  (:emitter
-   (emit-shift-inst segment dst amount #b011)))
-
-(define-instruction shl (segment dst amount)
-  (:printer-list
-   (shift-inst-printer-list #b100))
-  (:emitter
-   (emit-shift-inst segment dst amount #b100)))
-
-(define-instruction shr (segment dst amount)
-  (:printer-list
-   (shift-inst-printer-list #b101))
-  (:emitter
-   (emit-shift-inst segment dst amount #b101)))
-
-(define-instruction sar (segment dst amount)
-  (:printer-list
-   (shift-inst-printer-list #b111))
-  (:emitter
-   (emit-shift-inst segment dst amount #b111)))
+(macrolet ((define (name subop)
+             `(define-instruction ,name (segment dst amount)
+                (:printer shift-inst ((op '(#b110100 ,subop)))) ; shift by CL or 1
+                (:printer reg/mem-imm ((op '(#b1100000 ,subop))
+                                       (imm nil :type 'imm-byte)))
+                (:emitter (emit-shift-inst segment dst amount ,subop)))))
+  (define rol #b000)
+  (define ror #b001)
+  (define rcl #b010)
+  (define rcr #b011)
+  (define shl #b100)
+  (define shr #b101)
+  (define sar #b111))
 
 (defun emit-double-shift (segment opcode dst src amt)
   (let ((size (matching-operand-size dst src)))
@@ -2844,10 +2892,10 @@
 
 (define-instruction break (segment code)
   (:declare (type (unsigned-byte 8) code))
-  #!-ud2-breakpoints (:printer byte-imm ((op #b11001100)) '(:name :tab code)
-                               :control #'break-control)
-  #!+ud2-breakpoints (:printer word-imm ((op #b0000101100001111)) '(:name :tab code)
-                               :control #'break-control)
+  #!-ud2-breakpoints (:printer byte-imm ((op #b11001100))
+                               '(:name :tab code) :control #'break-control)
+  #!+ud2-breakpoints (:printer word-imm ((op #b0000101100001111))
+                               '(:name :tab code) :control #'break-control)
   (:emitter
    #!-ud2-breakpoints (emit-byte segment #b11001100)
    ;; On darwin, trap handling via SIGTRAP is unreliable, therefore we
@@ -3381,7 +3429,8 @@
           (aver (xmm-register-p src))
           (emit-sse-inst segment src dst #x66 #x7e)))))
 
-(macrolet ((define-extract-sse-instruction (name prefix op1 op2 &key explicit-qword)
+(macrolet ((define-extract-sse-instruction (name prefix op1 op2
+                                            &key explicit-qword)
              `(define-instruction ,name (segment dst src imm)
                 (:printer
                  ,(if op2 (if explicit-qword
@@ -3516,15 +3565,18 @@
 (macrolet ((regular-2byte-sse-inst (name prefix op1 op2)
              `(define-instruction ,name (segment dst src)
                 (:printer-list
-                 ',(2byte-sse-inst-printer-list '2byte-xmm-xmm/mem prefix op1 op2))
+                 ',(2byte-sse-inst-printer-list '2byte-xmm-xmm/mem prefix
+                                                op1 op2))
                 (:emitter
-                 (emit-regular-2byte-sse-inst segment dst src ,prefix ,op1 ,op2))))
+                 (emit-regular-2byte-sse-inst segment dst src ,prefix
+                                              ,op1 ,op2))))
            (regular-2byte-sse-inst-imm (name prefix op1 op2)
              `(define-instruction ,name (segment dst src imm)
                 (:printer-list
-                 ',(2byte-sse-inst-printer-list '2byte-xmm-xmm/mem prefix op1 op2
-                                                :more-fields '((imm nil :type imm-byte))
-                                                :printer `(:name :tab reg ", " reg/mem ", " imm)))
+                 ',(2byte-sse-inst-printer-list
+                    '2byte-xmm-xmm/mem prefix op1 op2
+                    :more-fields '((imm nil :type imm-byte))
+                    :printer `(:name :tab reg ", " reg/mem ", " imm)))
                 (:emitter
                  (aver (typep imm '(unsigned-byte 8)))
                  (emit-regular-2byte-sse-inst segment dst src ,prefix ,op1 ,op2
@@ -3618,7 +3670,8 @@
                 (:emitter
                  (aver (xmm-register-p dst))
                  (aver (and (xmm-register-p mask) (= (tn-offset mask) 0)))
-                 (emit-regular-2byte-sse-inst segment dst src ,prefix ,op1 ,op2)))))
+                 (emit-regular-2byte-sse-inst segment dst src ,prefix
+                                              ,op1 ,op2)))))
 
   (define-sse-inst-implicit-mask pblendvb #x66 #x38 #x10)
   (define-sse-inst-implicit-mask blendvps #x66 #x38 #x14)
