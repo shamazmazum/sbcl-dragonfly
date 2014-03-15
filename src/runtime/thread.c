@@ -289,7 +289,7 @@ plan_thread_post_mortem(struct thread *corpse)
     }
 }
 
-static void*
+static void
 perform_thread_post_mortem(struct thread_post_mortem *post_mortem)
 {
 #ifdef CREATE_POST_MORTEM_THREAD
@@ -302,7 +302,6 @@ perform_thread_post_mortem(struct thread_post_mortem *post_mortem)
         os_invalidate(post_mortem->os_address, THREAD_STRUCT_SIZE);
         free(post_mortem);
     }
-    return NULL;
 }
 
 static void
