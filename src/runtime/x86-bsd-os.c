@@ -228,6 +228,7 @@ int arch_os_thread_cleanup(struct thread *thread) {
     FSHOW_SIGNAL((stderr, "/ TLS: Freeing LDT %x\n", n));
 
     __asm__ __volatile__ ("mov %0, %%fs" : : "r"(0));
+    i386_set_ldt(n, NULL, 1);
 #endif
 
     return 1;                  /* success */
