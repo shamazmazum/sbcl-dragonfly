@@ -236,4 +236,44 @@
 
 (with-test (:name (:print-undefined-function-condition))
   (handler-case (funcall '#:foo)
-    (undefined-function (c) (princ c))))
+    (undefined-function (c) (princ-to-string c))))
+
+;; Printing a READER-ERROR while the underlying stream is still open
+;; should print the stream position information.
+(with-test (:name (reader-error :stream-error-position-info :open-stream :bug-1264902))
+  (assert
+   (search
+    "Line: 1, Column: 22, File-Position: 22"
+    (with-input-from-string (stream "no-such-package::symbol")
+      (handler-case
+          (read stream)
+        (reader-error (condition) (princ-to-string condition)))))))
+
+;; Printing a READER-ERROR when the underlying stream has been closed
+;; should still work, but the stream information will not be printed.
+(with-test (:name (reader-error :stream-error-position-info :closed-stream :bug-1264902))
+  (assert
+   (search
+    "Package NO-SUCH-PACKAGE does not exist"
+    (handler-case
+        (with-input-from-string (stream "no-such-package::symbol")
+          (read stream))
+      (reader-error (condition) (princ-to-string condition))))))
+
+(with-test (:name (make-condition :non-condition-class))
+  (handler-case
+      (make-condition 'standard-class)
+    (type-error (condition)
+      (assert (search "not a condition class"
+                      (princ-to-string condition))))))
+
+;; When called with a symbol not designating a condition class,
+;; MAKE-CONDITION used to signal an error which printed as "NIL does
+;; not designate a condition class.".
+(with-test (:name (make-condition :correct-error-for-undefined-condition
+                   :bug-1199223))
+  (handler-case
+      (make-condition 'no-such-condition)
+    (type-error (condition)
+      (assert (search (string 'no-such-condition)
+                      (princ-to-string condition))))))

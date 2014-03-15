@@ -76,6 +76,7 @@
       (dolist (entry (ir2-component-entries 2comp))
         (make-fun-entry entry code-obj object))
 
+      #!-(or x86 x86-64)
       (sb!vm:sanctify-for-execution code-obj)
 
       (let ((info (debug-info-for-component component)))
@@ -110,7 +111,7 @@
                 (reference-core-fun code-obj index (cdr const) object))
                (:fdefinition
                 (setf (code-header-ref code-obj index)
-                      (fdefinition-object (cdr const) t)))
+                      (find-or-create-fdefinition (cdr const))))
                (:known-fun
                 (setf (code-header-ref code-obj index)
                       (%coerce-name-to-fun (cdr const)))))))))))
