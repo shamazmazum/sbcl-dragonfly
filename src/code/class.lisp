@@ -251,6 +251,9 @@
 ;;; function in a MAKE-LOAD-FORM expression) that functionality has
 ;;; been split off into INIT-OR-CHECK-LAYOUT.
 (declaim (ftype (sfunction (symbol) layout) find-layout))
+;; The comment "This seems ..." is misleading but I don't have a better one.
+;; FIND-LAYOUT is used by FIND-AND-INIT-OR-CHECK-LAYOUT which is used
+;; by FOP-LAYOUT, so clearly it's used when reading fasl files.
 (defun find-layout (name)
   ;; This seems to be currently used only from the compiler, but make
   ;; it thread-safe all the same. We need to lock *F-R-L* before doing
@@ -672,9 +675,7 @@
 ;;; classes. Non-structure "typed" defstructs are a special case, and
 ;;; don't have a corresponding class.
 (def!struct (structure-classoid (:include classoid)
-                                (:constructor make-structure-classoid))
-  ;; If true, a default keyword constructor for this structure.
-  (constructor nil :type (or function null)))
+                                (:constructor make-structure-classoid)))
 
 ;;;; classoid namespace
 
@@ -697,24 +698,18 @@
   ;; PCL class, if any
   (pcl-class nil))
 
-;;; Protected by the hash-table lock, used only in FIND-CLASSOID-CELL.
-(defvar *classoid-cells*)
-(!cold-init-forms
-  (setq *classoid-cells* (make-hash-table :test 'eq)))
-
 (defun find-classoid-cell (name &key create errorp)
-  (let ((table *classoid-cells*)
-        (real-name (uncross name)))
-    (or (with-locked-system-table (table)
-          (or (gethash real-name table)
-              (when create
-                (setf (gethash real-name table) (make-classoid-cell real-name)))))
-        (when errorp
-          (error 'simple-type-error
-                 :datum nil
-                 :expected-type 'class
-                 :format-control "Class not yet defined: ~S"
-                 :format-arguments (list name))))))
+  (let ((real-name (uncross name)))
+    (cond ((info :type :classoid-cell real-name))
+          (create
+           (sb!c::atomically-get-or-put-symbol-info
+            :type :classoid-cell real-name (make-classoid-cell real-name)))
+          (errorp
+           (error 'simple-type-error
+                  :datum nil
+                  :expected-type 'class
+                  :format-control "Class not yet defined: ~S"
+                  :format-arguments (list name))))))
 
 (eval-when (#-sb-xc :compile-toplevel :load-toplevel :execute)
 
@@ -769,9 +764,9 @@
             (:defined
              (warn "redefining DEFTYPE type to be a class: ~
                     ~/sb-impl::print-symbol-with-prefix/" name)
-                (setf (info :type :expander name) nil
-                      (info :type :lambda-list name) nil
-                      (info :type :source-location name) nil)))
+             (clear-info :type :expander name)
+             (clear-info :type :lambda-list name)
+             (clear-info :type :source-location name)))
 
           (remhash name table)
           (%note-type-defined name)
@@ -817,9 +812,9 @@
          ;; Clear the cell.
          (setf (classoid-cell-classoid cell) nil
                (classoid-cell-pcl-class cell) nil))
-       (setf (info :type :kind name) nil
-             (info :type :documentation name) nil
-             (info :type :compiler-layout name) nil)))))
+       (clear-info :type :kind name)
+       (clear-info :type :documentation name)
+       (clear-info :type :compiler-layout name)))))
 
 ;;; Called when we are about to define NAME as a class meeting some
 ;;; predicate (such as a meta-class type test.) The first result is

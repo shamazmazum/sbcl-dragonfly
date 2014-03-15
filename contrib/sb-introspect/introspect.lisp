@@ -234,11 +234,11 @@ If an unsupported TYPE is requested, the function will return NIL.
        ((:method)
         (when (fboundp name)
           (let ((fun (real-fdefinition name)))
-           (when (typep fun 'generic-function)
-             (loop for method in (sb-mop::generic-function-methods
-                                  fun)
-                for source = (find-definition-source method)
-                when source collect source)))))
+            (when (typep fun 'generic-function)
+              (loop for method in (sb-mop::generic-function-methods
+                                   fun)
+                    for source = (find-definition-source method)
+                    when source collect source)))))
        ((:setf-expander)
         (when (and (consp name)
                    (eq (car name) 'setf))
@@ -266,12 +266,12 @@ If an unsupported TYPE is requested, the function will return NIL.
               (find-definition-source class)))))
        ((:method-combination)
         (let ((combination-fun
-               (find-method #'sb-mop:find-method-combination
-                            nil
-                            (list (find-class 'generic-function)
-                                  (list 'eql name)
-                                  t)
-                            nil)))
+                (find-method #'sb-mop:find-method-combination
+                             nil
+                             (list (find-class 'generic-function)
+                                   (list 'eql name)
+                                   t)
+                             nil)))
           (when combination-fun
             (find-definition-source combination-fun))))
        ((:package)
@@ -316,10 +316,18 @@ If an unsupported TYPE is requested, the function will return NIL.
         (when (symbolp name)
           (find-vop-source name)))
        ((:source-transform)
-        (when (symbolp name)
-          (let ((transform-fun (sb-int:info :function :source-transform name)))
-            (when transform-fun
-              (find-definition-source transform-fun)))))
+        (let ((transform-fun (sb-int:info :function :source-transform name))
+              (accessor (sb-int:info :function :structure-accessor
+                                     (if (typep name '(cons (eql setf)
+                                                       (cons symbol null)))
+                                         (second name)
+                                         name))))
+          ;; Structure accessors have source transforms, but the
+          ;; returned locations will neither show the actual place
+          ;; where it's defined, nor is really interesting.
+          (when (and transform-fun
+                     (not accessor))
+            (find-definition-source transform-fun))))
        (t
         nil)))))
 
@@ -643,16 +651,44 @@ constant pool."
     (function
      (sb-kernel::%fun-fun functoid))))
 
+;; Call FUNCTION with two args, NAME and VALUE, for each value that is
+;; either the FDEFINITION or MACRO-FUNCTION of some global name.
+;;
+(defun call-with-each-global-functional (function)
+  (macrolet ((maybe-call-function ()
+               `(when (or (and (eq type-number (info-num :definition))
+                               (not (eq (sb-int:info :function :kind name)
+                                        :macro)))
+                          (eq type-number (info-num :macro-function)))
+                  (funcall function name value)))
+             (info-num (type)
+               (sb-c::type-info-number
+                (sb-c::type-info-or-lose :function type))))
+    ;; Pass 1 is for symbols. WITH-PACKAGE-ITERATOR helps avoid the problem
+    ;; of duplicate symbols, since we can compare the fourth value against
+    ;; the symbol's home package.
+    (with-package-iterator (iterate (list-all-packages) :internal :external)
+      (loop
+         (multiple-value-bind (foundp sym access package) (iterate)
+           (declare (ignore access))
+           (cond ((not foundp) (return))
+                 ((eq (symbol-package sym) package)
+                  (sb-c::call-with-each-info (lambda (name type-number value)
+                                               (maybe-call-function))
+                                             sym))))))
+    ;; Pass 2 is over global environments. This is slightly wrong, as newer env
+    ;; structures shadow older ones, but a name/type can be found in several.
+    ;; We should suppress dups somehow. It doesn't matter for fdefinitions,
+    ;; because they are permanently attached to their name in globaldb,
+    ;; but anomalies are possible with macros.
+    (dolist (env sb-c::*info-environment*)
+      (sb-c::do-info (env :type-number type-number :name name :value value)
+        (maybe-call-function)))))
+
 (defun collect-xref (kind-index wanted-name)
   (let ((ret nil))
-    (dolist (env sb-c::*info-environment* ret)
-      ;; Loop through the infodb ...
-      (sb-c::do-info (env :class class :type type :name info-name
-                          :value value)
-        ;; ... looking for function or macro definitions
-        (when (and (eql class :function)
-                   (or (eql type :macro-function)
-                       (eql type :definition)))
+    (call-with-each-global-functional
+     (lambda (info-name value)
           ;; Get a simple-fun for the definition, and an xref array
           ;; from the table if available.
           (let* ((simple-fun (get-simple-fun value))
@@ -672,7 +708,8 @@ constant pool."
                          (setf (definition-source-form-path source-location)
                                xref-path)
                          (push (cons info-name source-location)
-                               ret))))))))))
+                               ret)))))))
+    ret))
 
 (defun who-calls (function-name)
   "Use the xref facility to search for source locations where the

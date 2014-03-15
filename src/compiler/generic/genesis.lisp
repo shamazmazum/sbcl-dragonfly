@@ -836,7 +836,7 @@ core and return a descriptor to it."
     (write-wordindexed symbol
                        sb!vm:symbol-hash-slot
                        (make-fixnum-descriptor 0))
-    (write-wordindexed symbol sb!vm:symbol-plist-slot *nil-descriptor*)
+    (write-wordindexed symbol sb!vm:symbol-info-slot *nil-descriptor*)
     (write-wordindexed symbol sb!vm:symbol-name-slot
                        (base-string-to-core name *dynamic*))
     (write-wordindexed symbol sb!vm:symbol-package-slot *nil-descriptor*)
@@ -1156,6 +1156,8 @@ core and return a descriptor to it."
     (car cold-intern-info)))
 
 ;;; Construct and return a value for use as *NIL-DESCRIPTOR*.
+;;; It might be nice to put NIL on a readonly page by itself to prevent unsafe
+;;; code from destroying the world with (RPLACx nil 'kablooey)
 (defun make-nil-descriptor ()
   (let* ((des (allocate-unboxed-object
                *static*
@@ -1179,8 +1181,8 @@ core and return a descriptor to it."
                        (+ 2 sb!vm:symbol-value-slot)
                        result)
     (write-wordindexed des
-                       (+ 1 sb!vm:symbol-plist-slot)
-                       result)
+                       (+ 1 sb!vm:symbol-info-slot)
+                       (cold-cons result result)) ; NIL's info is (nil . nil)
     (write-wordindexed des
                        (+ 1 sb!vm:symbol-name-slot)
                        ;; This is *DYNAMIC*, and DES is *STATIC*,
@@ -2066,8 +2068,11 @@ core and return a descriptor to it."
             (+ sb!vm:instance-slots-offset
                (target-layout-index 'n-untagged-slots)))))
          (ntagged (- size nuntagged)))
+    ;; An instance's header word should always indicate that it has an *odd*
+    ;; number of words after the header so that the total with header is even.
     (write-memory result (make-other-immediate-descriptor
-                          size sb!vm:instance-header-widetag))
+                          (logior size 1)
+                          sb!vm:instance-header-widetag))
     (write-wordindexed result sb!vm:instance-slots-offset layout)
     (do ((index 1 (1+ index)))
         ((eql index size))
@@ -2443,6 +2448,7 @@ core and return a descriptor to it."
 (define-cold-fop (fop-fdefinition)
   (cold-fdefinition-object (pop-stack)))
 
+#!-(or x86 x86-64)
 (define-cold-fop (fop-sanctify-for-execution)
   (pop-stack))
 

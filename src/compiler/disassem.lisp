@@ -24,7 +24,7 @@
 
 (def!constant max-filtered-value-index 32)
 (deftype filtered-value-index ()
-  `(integer 0 ,max-filtered-value-index))
+  `(integer 0 (,max-filtered-value-index)))
 (deftype filtered-value-vector ()
   `(simple-array t (,max-filtered-value-index)))
 
@@ -43,7 +43,7 @@
 ;; How many columns of output to allow for the address preceding each line.
 ;; If NIL, use the minimum possible width for the disassembly range.
 ;; If 0, do not print addresses.
-(defvar *disassem-location-column-width* 8)
+(defvar *disassem-location-column-width* nil)
 (declaim (type (or null text-width) *disassem-location-column-width*))
 
 ;;; the width of the column in which instruction-names are printed. A
@@ -117,7 +117,10 @@
 ;;;; If performance: *Really*? How fast does disassembly need to be??
 ;;;; So: Could we just punt this?
 
-(defstruct (fun-cache (:copier nil))
+(defstruct (fun-cache (:copier nil)
+                      (:print-object (lambda (self stream)
+                                       (print-unreadable-object
+                                         (self stream :type t :identity t)))))
   (printers nil :type list)
   (labellers nil :type list)
   (prefilters nil :type list))
@@ -331,7 +334,25 @@
 (defvar *disassem-fun-cache* (make-fun-cache))
 
 (defstruct (arg (:copier nil)
-                (:predicate nil))
+                (:predicate nil)
+                (:constructor %make-arg (name &optional position))
+                (:constructor standard-make-arg) ; only so #S readmacro works
+                (:print-object
+                 (lambda (self stream)
+                   (if *print-readably*
+                       (call-next-method)
+                       (print-unreadable-object (self stream :type t)
+                         (format stream
+                                 "~D:~A ~:[~;+~]~:S~@[=~S~]~@[ filt=~S~]~
+~@[ lbl=~S~]~@[ prt=~S~]"
+                                 (arg-position self)
+                                 (arg-name self)
+                                 (arg-sign-extend-p self)
+                                 (arg-fields self)
+                                 (arg-value self)
+                                 (arg-prefilter self)
+                                 (arg-use-label self)
+                                 (arg-printer self)))))))
   (name nil :type symbol)
   (fields nil :type list)
 
@@ -347,6 +368,8 @@
   (use-label nil))
 
 (defstruct (instruction-format (:conc-name format-)
+                               (:constructor make-inst-format
+                                             (name length default-printer args))
                                (:copier nil))
   (name nil)
   (args nil :type list)
@@ -550,31 +573,24 @@
                      ,@(and prefilter-defun (list prefilter-defun))))
                  ))))))))
 
-(defun update-args-form (var name-form descrip-forms evalp
-                             &optional format-length-form)
+(defun update-args-form (var name-form descrip-forms evalp)
   `(setf ,var
          ,(if evalp
-              `(modify-or-add-arg ,name-form
-                                  ,var
-                                  *disassem-arg-types*
-                                  ,@(and format-length-form
-                                         `(:format-length
-                                            ,format-length-form))
-                                  ,@descrip-forms)
-              `(apply #'modify-or-add-arg
-                      ,name-form
-                      ,var
-                      *disassem-arg-types*
-                      ,@(and format-length-form
-                             `(:format-length ,format-length-form))
-                      ',descrip-forms))))
+              `(modify-or-add-arg ,name-form ,var ,@descrip-forms)
+              `(apply #'modify-or-add-arg ,name-form ,var ',descrip-forms))))
 
 (defun format-or-lose (name)
   (or (gethash name *disassem-inst-formats*)
       (pd-error "unknown instruction format ~S" name)))
 
 ;;; FIXME: needed only at build-the-system time, not in running system
-(defmacro define-instruction-format (header &rest fields)
+;;; and FIXME: better syntax would allow inheriting the length to avoid
+;;; re-stating it needlessly in some derived formats. Perhaps:
+;;; (DEFINE-INSTRUCTION-FORMAT NAME (:bits N [more-format-keys]*) &rest fields)
+;;;
+(defmacro define-instruction-format ((format-name length-in-bits
+                                      &key default-printer include)
+                                     &rest arg-specs)
   #!+sb-doc
   "DEFINE-INSTRUCTION-FORMAT (Name Length {Format-Key Value}*) Arg-Def*
   Define an instruction format NAME for the disassembler's use. LENGTH is
@@ -632,136 +648,124 @@
       If non-NIL, the value of this argument is used as an address, and if
       that address occurs inside the disassembled code, it is replaced by a
       label. If this is a function, it is called to filter the value."
-  (gen-format-def-form header fields))
+  (let ((length-var (gensym)) ; are lengths ever non-constant? probably not.
+        (inherited-args
+         (if include
+             (copy-list (format-args (format-or-lose include)))))
+        added-args readers all-wrapper-defs)
+    (dolist (arg-spec arg-specs)
+      (let ((arg-name (car arg-spec)))
+        (multiple-value-bind (props wrapper-defs)
+            (munge-fun-refs (cdr arg-spec) t t
+                            (symbolicate format-name '- arg-name))
+          (setf all-wrapper-defs (nconc wrapper-defs all-wrapper-defs))
+          (let ((reader (getf props :reader)))
+            (when reader
+              (setq readers (list* #!-sb-fluid `(declaim (inline ,reader))
+                                   `(defun ,reader (dchunk dstate)
+                                      (declare (ignorable dchunk dstate))
+                                      (arg-access-macro ,arg-name ,format-name
+                                                        dchunk dstate))
+                                   readers))
+              (remf props :reader))) ; ok because MUNGEing copied the plist
+          (let ((cell (member arg-name inherited-args
+                              :key (lambda (x)
+                                     (arg-name (if (listp x) (second x) x))))))
+            (cond ((not cell)
+                   (push `(make-arg
+                           ,(+ (length inherited-args) (length added-args))
+                           ,length-var ',arg-name ,@props)
+                         added-args))
+                  (props ; do nothing if no alterations
+                   (rplaca cell
+                           `(copy-arg ,(car cell) ,length-var ,@props))))))))
+    `(progn
+       ,@all-wrapper-defs
+       (eval-when (:compile-toplevel :execute)
+         (let ((,length-var ,length-in-bits))
+           (setf (gethash ',format-name *disassem-inst-formats*)
+                 (make-inst-format ',format-name (bits-to-bytes ,length-var)
+                                   ,(maybe-quote t default-printer)
+                                   (list ,@inherited-args
+                                         ,@(nreverse added-args))))))
+       ,@readers)))
 
-;;; FIXME: needed only at build-the-system time, not in running system
-(defun gen-format-def-form (header descrips &optional (evalp t))
-  #!+sb-doc
-  "Generate a form to define an instruction format. See
-  DEFINE-INSTRUCTION-FORMAT for more info."
-  (when (atom header)
-    (setf header (list header)))
-  (destructuring-bind (name length &key default-printer include) header
-    (let ((args-var (gensym))
-          (length-var (gensym))
-          (all-wrapper-defs nil)
-          (arg-count 0))
-      (collect ((arg-def-forms))
-        (dolist (descrip descrips)
-          (let ((name (pop descrip)))
-            (multiple-value-bind (descrip wrapper-defs)
-                (munge-fun-refs
-                 descrip evalp t (format nil "~:@(~A~)-~D" name arg-count))
-              (arg-def-forms
-               (update-args-form args-var `',name descrip evalp length-var))
-              (setf all-wrapper-defs
-                    (nconc wrapper-defs all-wrapper-defs)))
-            (incf arg-count)))
-        `(progn
-           ,@all-wrapper-defs
-           (eval-when (:compile-toplevel :execute)
-             (let ((,length-var ,length)
-                   (,args-var
-                    ,(and include
-                          `(copy-list
-                            (format-args
-                             (format-or-lose ,include))))))
-               ,@(arg-def-forms)
-               (setf (gethash ',name *disassem-inst-formats*)
-                     (make-instruction-format
-                      :name ',name
-                      :length (bits-to-bytes ,length-var)
-                      :default-printer ,(maybe-quote evalp default-printer)
-                      :args ,args-var))
-               (eval
-                `(progn
-                   ,@(mapcar (lambda (arg)
-                               (when (arg-fields arg)
-                                 (gen-arg-access-macro-def-form
-                                  arg ,args-var ',name)))
-                             ,args-var))))))))))
+(defun make-arg (number format-length-bits name &rest properties)
+  (apply #'modify-arg (%make-arg name number) format-length-bits properties))
+
+(defun copy-arg (arg format-length-bits &rest properties)
+  (apply #'modify-arg (copy-structure arg) format-length-bits properties))
 
 ;;; FIXME: probably needed only at build-the-system time, not in
 ;;; final target system
-(defun modify-or-add-arg (arg-name
-                          args
-                          type-table
-                          &key
-                          (value nil value-p)
+(defun modify-or-add-arg (arg-name args &rest properties)
+  (declare (dynamic-extent properties))
+  (when (get-properties properties '(:field :fields))
+    (error "~@<in arg ~S: ~3I~:_~
+          can't specify fields except using DEFINE-INSTRUCTION-FORMAT~:>"
+           arg-name))
+  (let* ((cell (member arg-name args :key #'arg-name))
+         (arg (if cell
+                  (setf (car cell) (copy-structure (car cell)))
+                  (let ((arg (%make-arg arg-name)))
+                    (setf args (nconc args (list arg)))
+                    arg))))
+    (apply #'modify-arg arg nil properties)
+    args))
+
+(defun modify-arg (arg format-length
+                   &key   (value nil value-p)
                           (type nil type-p)
                           (prefilter nil prefilter-p)
                           (printer nil printer-p)
                           (sign-extend nil sign-extend-p)
                           (use-label nil use-label-p)
                           (field nil field-p)
-                          (fields nil fields-p)
-                          format-length)
-  (let* ((arg-pos (position arg-name args :key #'arg-name))
-         (arg
-          (if (null arg-pos)
-              (let ((arg (make-arg :name arg-name)))
-                (if (null args)
-                    (setf args (list arg))
-                    (push arg (cdr (last args))))
-                arg)
-              (setf (nth arg-pos args)
-                    (copy-structure (nth arg-pos args))))))
-    (when (and field-p (not fields-p))
-      (setf fields (list field))
-      (setf fields-p t))
-    (when type-p
-      (set-arg-from-type arg type type-table))
-    (when value-p
-      (setf (arg-value arg) value))
-    (when prefilter-p
-      (setf (arg-prefilter arg) prefilter))
-    (when sign-extend-p
-      (setf (arg-sign-extend-p arg) sign-extend))
-    (when printer-p
-      (setf (arg-printer arg) printer))
-    (when use-label-p
-      (setf (arg-use-label arg) use-label))
-    (when fields-p
-      (when (null format-length)
-        (error
-         "~@<in arg ~S: ~3I~:_~
-          can't specify fields except using DEFINE-INSTRUCTION-FORMAT~:>"
-         arg-name))
-      (setf (arg-fields arg)
-            (mapcar (lambda (bytespec)
-                      (when (> (+ (byte-position bytespec)
-                                  (byte-size bytespec))
-                               format-length)
-                        (error "~@<in arg ~S: ~3I~:_~
-                                     The field ~S doesn't fit in an ~
-                                     instruction-format ~W bits wide.~:>"
-                               arg-name
-                               bytespec
-                               format-length))
-                      (correct-dchunk-bytespec-for-endianness
-                       bytespec
-                       format-length
-                       sb!c:*backend-byte-order*))
-                    fields)))
-    args))
+                          (fields nil fields-p))
+  (when field-p
+    (if fields-p
+        (error ":FIELD and :FIELDS are mutually exclusive")
+        (setf fields (list field) fields-p t)))
+  (when type-p
+    (set-arg-from-type arg type *disassem-arg-types*))
+  (when value-p
+    (setf (arg-value arg) value))
+  (when prefilter-p
+    (setf (arg-prefilter arg) prefilter))
+  (when sign-extend-p
+    (setf (arg-sign-extend-p arg) sign-extend))
+  (when printer-p
+    (setf (arg-printer arg) printer))
+  (when use-label-p
+    (setf (arg-use-label arg) use-label))
+  (when fields-p
+    (setf (arg-fields arg)
+          (mapcar (lambda (bytespec)
+                    (when (> (+ (byte-position bytespec) (byte-size bytespec))
+                             format-length)
+                      (error "~@<in arg ~S: ~3I~:_~
+                                   The field ~S doesn't fit in an ~
+                                   instruction-format ~W bits wide.~:>"
+                             (arg-name arg) bytespec format-length))
+                    (correct-dchunk-bytespec-for-endianness
+                     bytespec format-length sb!c:*backend-byte-order*))
+                  fields)))
+  arg)
 
-(defun gen-arg-access-macro-def-form (arg args format-name)
-  (let* ((funstate (make-funstate args))
-         (arg-val-form (arg-value-form arg funstate :adjusted))
-         (bindings (make-arg-temp-bindings funstate)))
-    `(sb!xc:defmacro ,(symbolicate format-name "-" (arg-name arg))
-         (chunk dstate)
-       `(let ((chunk ,chunk) (dstate ,dstate))
-          (declare (ignorable chunk dstate))
-          (flet ((local-filtered-value (offset)
-                   (declare (type filtered-value-index offset))
-                   (aref (dstate-filtered-values dstate) offset))
-                 (local-extract (bytespec)
-                   (dchunk-extract chunk bytespec)))
-            (declare (ignorable #'local-filtered-value #'local-extract)
-                     (inline local-filtered-value local-extract))
-            (let* ,',bindings
-              ,',arg-val-form))))))
+;; Generate a sexpr to extract ARG-NAME of FORMAT-NAME using CHUNK and DSTATE.
+;; The first two arguments to this macro are not runtime-evaluated.
+(defmacro arg-access-macro (arg-name format-name chunk dstate)
+  (let* ((funstate (make-funstate (format-args (format-or-lose format-name))))
+         (arg (arg-or-lose arg-name funstate))
+         (arg-val-form (arg-value-form arg funstate :adjusted)))
+    `(flet ((local-filtered-value (offset)
+              (declare (type filtered-value-index offset))
+              (aref (dstate-filtered-values ,dstate) offset))
+            (local-extract (bytespec)
+              (dchunk-extract ,chunk bytespec)))
+       (declare (ignorable #'local-filtered-value #'local-extract)
+                (inline local-filtered-value local-extract))
+       (let* ,(make-arg-temp-bindings funstate) ,arg-val-form))))
 
 (defun arg-value-form (arg funstate
                        &optional
@@ -875,18 +879,17 @@
 ;;;     an address, and if that address occurs inside the disassembled
 ;;;     code, it is replaced by a label. If this is a function, it is
 ;;;     called to filter the value.
-(defmacro define-arg-type (name &rest args)
-  (gen-arg-type-def-form name args))
-
-;;; Generate a form to define a disassembler argument type. See
-;;; DEFINE-ARG-TYPE for more information.
-(defun gen-arg-type-def-form (name args &optional (evalp t))
+(defmacro define-arg-type (name &rest args
+                           &key sign-extend type prefilter printer use-label)
+  (declare (ignore sign-extend type prefilter printer use-label))
   (multiple-value-bind (args wrapper-defs)
-      (munge-fun-refs args evalp t name)
+      (munge-fun-refs args t t name)
     `(progn
        ,@wrapper-defs
        (eval-when (:compile-toplevel :execute)
-         ,(update-args-form '*disassem-arg-types* `',name args evalp))
+         (setq *disassem-arg-types*
+               (delete ',name *disassem-arg-types* :key #'arg-name))
+         (push (modify-arg (%make-arg ',name) nil ,@args) *disassem-arg-types*))
        ',name)))
 
 (defmacro def-arg-form-kind ((&rest names) &rest inits)
@@ -1313,7 +1316,7 @@
                           (eq (caadr source) 'function)))
            (pd-error "The first arg to :USING must be a string or #'function."))
          (compile-print (caddr source) funstate
-                        (cons (eval (cadr source)) (cadr source))))
+                        (make-valsrc (eval (cadr source)) (cadr source))))
         ((eq (car source) :plus-integer)
          ;; prints the given field proceed with a + or a -
          (let ((form
@@ -1455,7 +1458,8 @@
                       `(let ((labels ,labels-form)
                              (addr
                               ,(arg-value-form arg funstate :adjusted nil)))
-                         (if (assoc addr labels :test #'eq)
+                         ;; if labeler didn't return an integer, it isn't a label
+                         (if (or (not (integerp addr)) (assoc addr labels))
                              labels
                              (cons (cons addr nil) labels))))))
             `(defun ,name (chunk labels dstate)

@@ -66,15 +66,9 @@
           (cond
             (rip-p
              (princ offset stream)
-             (let ((addr (+ offset (sb!disassem:dstate-next-addr dstate))))
-               ;; If MODE is :COMPUTE, the address of the access is noted,
-               ;; otherwise the contents are noted.
-               (case mode
-                 (:compute ; this does not trigger the mem-ref-hook
-                  (sb!disassem:note (lambda (s) (format s "= #x~x" addr))
-                                    dstate))
-                 (t
-                  (when (plusp addr) ; FIXME: what does this test achieve?
+             (unless (eq mode :compute)
+               (let ((addr (+ offset (sb!disassem:dstate-next-addr dstate))))
+                 (when (plusp addr) ; FIXME: what does this test achieve?
                     (let ((hook (sb!disassem:dstate-get-prop
                                  dstate :rip-relative-mem-ref-hook)))
                       (when hook
@@ -83,7 +77,7 @@
                          1 (sb!disassem::note-code-constant-absolute
                             addr dstate width))
                         (sb!disassem:maybe-note-assembler-routine
-                         addr nil dstate)))))))
+                         addr nil dstate))))))
             (firstp
              (progn
                (sb!disassem:princ16 offset stream)
@@ -153,9 +147,9 @@
   (setf (dstate-get-prop dstate :rip-relative-mem-ref-hook) nil))
 
 (defun disassemble-unboxed-data (segment stream dstate)
-  (aver (= (dstate-cur-offs dstate) (seg-opcodes-length segment)))
   (unless (< (dstate-cur-offs dstate) (seg-length segment))
     (return-from disassemble-unboxed-data))
+  (aver (= (dstate-cur-offs dstate) (seg-opcodes-length segment)))
   ;; Remove refs at addresses outside this segment and sort whatever remains.
   (let ((refs (sort (remove-if (lambda (x) (< (car x) (dstate-cur-offs dstate)))
                                (seg-unboxed-refs segment))

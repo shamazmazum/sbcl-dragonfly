@@ -32,42 +32,45 @@
 (declaim (notinline opaque-identity))
 (defun opaque-identity (x) x)
 
-(defstruct (boa-saux (:constructor make-boa-saux (&aux a (b 3) (c))))
+(with-test (:name :defstruct-boa-typecheck)
+  (defstruct (boa-saux (:constructor make-boa-saux (&aux a (b 3) (c))))
     (a #\! :type (integer 1 2))
     (b #\? :type (integer 3 4))
     (c #\# :type (integer 5 6)))
-(let ((s (make-boa-saux)))
-  (locally (declare (optimize (safety 3))
-                    (inline boa-saux-a))
-    (assert (raises-error? (opaque-identity (boa-saux-a s)) type-error)))
-  (setf (boa-saux-a s) 1)
-  (setf (boa-saux-c s) 5)
-  (assert (eql (boa-saux-a s) 1))
-  (assert (eql (boa-saux-b s) 3))
-  (assert (eql (boa-saux-c s) 5)))
+  (let ((s (make-boa-saux)))
+    (locally (declare (optimize (safety 3))
+                      (inline boa-saux-a))
+      (assert (raises-error? (opaque-identity (boa-saux-a s)) type-error)))
+    (setf (boa-saux-a s) 1)
+    (setf (boa-saux-c s) 5)
+    (assert (eql (boa-saux-a s) 1))
+    (assert (eql (boa-saux-b s) 3))
+    (assert (eql (boa-saux-c s) 5))))
                                         ; these two checks should be
                                         ; kept separated
 
 #+#.(cl:if (cl:eq sb-ext:*evaluator-mode* :compile) '(and) '(or))
-(let ((s (make-boa-saux)))
-  (locally (declare (optimize (safety 0))
-                    (inline boa-saux-a))
-    (assert (eql (opaque-identity (boa-saux-a s)) 0)))
-  (setf (boa-saux-a s) 1)
-  (setf (boa-saux-c s) 5)
-  (assert (eql (boa-saux-a s) 1))
-  (assert (eql (boa-saux-b s) 3))
-  (assert (eql (boa-saux-c s) 5)))
+(with-test (:name :defstruct-boa-no-error)
+ (let ((s (make-boa-saux)))
+   (locally (declare (optimize (safety 0))
+                     (inline boa-saux-a))
+     (assert (eql (opaque-identity (boa-saux-a s)) 0)))
+   (setf (boa-saux-a s) 1)
+   (setf (boa-saux-c s) 5)
+   (assert (eql (boa-saux-a s) 1))
+   (assert (eql (boa-saux-b s) 3))
+   (assert (eql (boa-saux-c s) 5))))
 
-(let ((s (make-boa-saux)))
-  (locally (declare (optimize (safety 3))
-                    (notinline boa-saux-a))
-    (assert (raises-error? (opaque-identity (boa-saux-a s)) type-error)))
-  (setf (boa-saux-a s) 1)
-  (setf (boa-saux-c s) 5)
-  (assert (eql (boa-saux-a s) 1))
-  (assert (eql (boa-saux-b s) 3))
-  (assert (eql (boa-saux-c s) 5)))
+(with-test (:name :defstruct-boa-typecheck.2)
+  (let ((s (make-boa-saux)))
+    (locally (declare (optimize (safety 3))
+                      (notinline boa-saux-a))
+      (assert (raises-error? (opaque-identity (boa-saux-a s)) type-error)))
+    (setf (boa-saux-a s) 1)
+    (setf (boa-saux-c s) 5)
+    (assert (eql (boa-saux-a s) 1))
+    (assert (eql (boa-saux-b s) 3))
+    (assert (eql (boa-saux-c s) 5))))
 
 ;;; basic inheritance
 (defstruct (astronaut (:include person)
@@ -600,8 +603,8 @@
             (defstruct (,base-name ,@type-options)
               x y)
             (defstruct (,up-name (:include ,base-name
-                                           (x "x" :type simple-string)
-                                           (y "y" :type simple-string))
+                                  (x "x" :type simple-string)
+                                  (y "y" :type simple-string))
                                  ,@type-options))
             (let ((ob (,(intern (format nil "MAKE-~A" up-name)))))
               (setf (,accessor ob) 0)
@@ -823,8 +826,12 @@ redefinition."
 (defun assert-is (predicate instance)
   (assert (funcall predicate instance)))
 
-(defun assert-invalid (predicate instance)
-  (assert (typep (nth-value 1 (ignore-errors (funcall predicate instance)))
+;;; It used to call the predicate function, but out-of-line predicate
+;;; functions now don't signal layout-invalid, just like inlined
+;;; predicates didn't signal it.
+(defun assert-invalid (instance)
+  (declare (notinline typep))
+  (assert (typep (nth-value 1 (ignore-errors (typep instance 'structure-object)))
                  'sb-kernel::layout-invalid)))
 
 ;; Don't try to understand this macro; just look at its expansion.
@@ -880,7 +887,7 @@ redefinition."
 
 ;; Base case: continue (i.e., invalidate instances).
 (with-defstruct-redefinition-test :defstruct/continue
-    (((defstruct ctor pred) :class-name redef-test-2 :slots (a))
+    (((defstruct ctor) :class-name redef-test-2 :slots (a))
      ((defstruct*) :class-name redef-test-2 :slots (a b)))
     ((path1 defstruct)
      (path2 defstruct*))
@@ -888,7 +895,7 @@ redefinition."
   (load path1)
   (let ((instance (funcall ctor)))
     (load path2)
-    (assert-invalid pred instance)))
+    (assert-invalid instance)))
 
 ;; Compiling a file with an incompatible defstruct should emit a
 ;; warning and an error, but the fasl should be loadable.
@@ -917,7 +924,7 @@ redefinition."
 ;; After compiling a file with an incompatible DEFSTRUCT, load the
 ;; fasl and ensure that an old instance has become invalid.
 (with-defstruct-redefinition-test :defstruct/compile-file-continue
-    (((defstruct ctor pred) :class-name redef-test-5 :slots (a))
+    (((defstruct ctor) :class-name redef-test-5 :slots (a))
      ((defstruct*) :class-name redef-test-5 :slots (a b)))
     ((path1 defstruct)
      (path2 defstruct*))
@@ -925,7 +932,7 @@ redefinition."
   (load path1)
   (let ((instance (funcall ctor)))
     (load (compile-file-assert path2))
-    (assert-invalid pred instance)))
+    (assert-invalid instance)))
 
 ;;; Subclasses.
 ;; Ensure that recklessly continuing DT(expected)T to instances of
@@ -948,7 +955,7 @@ redefinition."
 ;; Ensure that continuing invalidates instances of subclasses.
 (with-defstruct-redefinition-test :defstruct/subclass-continue
     (((defstruct) :class-name redef-test-7 :slots (a))
-     ((substruct ctor pred) :class-name redef-test-7-sub
+     ((substruct ctor) :class-name redef-test-7-sub
                             :super-name redef-test-7 :slots (z))
      ((defstruct*) :class-name redef-test-7 :slots (a b)))
     ((path1 defstruct substruct)
@@ -957,7 +964,7 @@ redefinition."
   (load path1)
   (let ((instance (funcall ctor)))
     (load (compile-file-assert path2))
-    (assert-invalid pred instance)))
+    (assert-invalid instance)))
 
 ;; Reclkessly continuing doesn't invalidate instances of subclasses.
 (with-defstruct-redefinition-test :defstruct/subclass-in-other-file-reckless
@@ -981,8 +988,8 @@ redefinition."
 ;; superclass definition leaves the predicates and accessors into the
 ;; subclass in a bad way until the subclass form is evaluated.
 (with-defstruct-redefinition-test :defstruct/subclass-in-other-file-continue
-    (((defstruct ignore pred1) :class-name redef-test-9 :slots (a))
-     ((substruct ctor pred2) :class-name redef-test-9-sub
+    (((defstruct ignore) :class-name redef-test-9 :slots (a))
+     ((substruct ctor) :class-name redef-test-9-sub
                              :super-name redef-test-9 :slots (z))
      ((defstruct*) :class-name redef-test-9 :slots (a b)))
     ((path1 defstruct)
@@ -997,11 +1004,11 @@ redefinition."
     ;; an instance of the superclass or of the subclass, but PRED2's
     ;; predicate will error with "an obsolete structure accessor
     ;; function was called".
-    (assert-invalid pred1 instance)
+    (assert-invalid instance)
     (format t "~&~A~%" (nth-value 1 (ignore-errors (funcall pred2 instance))))
     ;; After loading PATH2, we'll get the desired LAYOUT-INVALID error.
     (load path2)
-    (assert-invalid pred2 instance)))
+    (assert-invalid instance)))
 
 ;; Some other subclass wrinkles have to do with splitting definitions
 ;; accross files and compiling and loading things in a funny order.
@@ -1029,8 +1036,8 @@ redefinition."
     ;; order.
     (load (compile-file-pathname path3))
     (load (compile-file-pathname path2))
-    (assert-invalid pred1 instance)
-    (assert-invalid pred2 instance)))
+    (assert-invalid instance)
+    (assert-invalid instance)))
 
 (with-defstruct-redefinition-test
     :defstruct/subclass-in-other-file-funny-operation-order-continue
@@ -1154,12 +1161,12 @@ redefinition."
       (assert (not warn2))
       (assert (not fail2)))))
 
-(with-test (:name (defstruct :constant-slot-names))
+(with-test (:name (:defstruct :constant-slot-names))
   (defstruct defstruct-constant-slot-names t)
   (assert (= 3 (defstruct-constant-slot-names-t
                 (make-defstruct-constant-slot-names :t 3)))))
 
-(with-test (:name (defstruct :bogus-inherited-slot-specs))
+(with-test (:name (:defstruct :bogus-inherited-slot-specs))
   (defstruct flopsie a b c)
   (assert
    (handler-case (macroexpand '(defstruct (mopsie (:include flopsie (a 3) (z 9))) q))
@@ -1171,3 +1178,19 @@ redefinition."
      (error (c)
        (search "slot name A specified more than once" (write-to-string c :escape nil)))
      (:no-error (x) x nil))))
+
+(with-test (:name (:defstruct :bogus-aux))
+  (raises-error?
+   (defstruct bogus-aux.1 (:constructor make-bogus-aux.1 (&aux (a b c)))))
+  (raises-error?
+   (defstruct bogus-aux.2 (:constructor make-bogus-aux.2 (&aux (a . b)))))
+  (raises-error?
+   (defstruct bogus-aux.3 (:constructor make-bogus-aux.3 (&aux (1 b)))))
+  (raises-error?
+   (defstruct bogus-aux.4 (:constructor make-bogus-aux.4 (&aux 1)))))
+
+(with-test (:name (:defstruct :lexical-default))
+  (let ((x 0)) (defstruct lexical-default (a (incf x)))
+    (assert (= (lexical-default-a (make-lexical-default))
+               x
+               1))))

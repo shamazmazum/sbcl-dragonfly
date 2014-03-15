@@ -185,9 +185,10 @@
  ("src/code/kernel"      :not-host)
  ("src/code/toplevel"    :not-host)
  ("src/code/cold-error"  :not-host)
+ ;; 'info-vector' is needed at least as early as 'fdefinition' so that the
+ ;; inlined INFO-VECTOR-FDEFINITION is available to %COERCE-CALLABLE-TO-FUN.
+ ("src/compiler/info-vector")
  ("src/code/fdefinition" :not-host)
- ;; FIXME: Figure out some way to make the compiler macro for INFO
- ;; available for compilation of "code/fdefinition".
 
  ;; In classic CMU CL, code/type was here. I've since split that into
  ;; lots of smaller pieces, some of which are here and some of which
@@ -400,7 +401,6 @@
  ("src/compiler/proclaim")
 
  ("src/code/class-init")
- ("src/code/typecheckfuns")
 
  ;; The DEFSTRUCT machinery needs SB!XC:SUBTYPEP, defined in
  ;; "code/late-type", and SB!XC:TYPEP, defined in "code/cross-type",
@@ -732,6 +732,8 @@
  ("src/code/bit-bash"    :not-host) ; needs %NEGATE from assembly/target/arith
 
  ("src/code/target-load" :not-host) ; needs special vars from code/load.lisp
+
+ #!-(or x86 x86-64)
  ("src/compiler/target/sanctify" :not-host)
 
  ;; FIXME: Does this really need stuff from compiler/dump.lisp?
