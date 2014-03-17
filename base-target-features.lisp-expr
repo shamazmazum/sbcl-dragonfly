@@ -452,7 +452,7 @@
  ;;   :freebsd    = We're intended to run under FreeBSD.
  ;;   :openbsd    = We're intended to run under OpenBSD.
  ;;   :netbsd     = We're intended to run under NetBSD.
- ;;   :dragonfly  = We're intended to run under DragonFly.
+ ;;   :dragonfly  = We're intended to run under DragonFly BSD.
  ;;   :darwin     = We're intended to run under Darwin (including MacOS X).
  ;;   :sunos      = We're intended to run under Solaris user environment
  ;;                 with the SunOS kernel.
