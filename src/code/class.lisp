@@ -197,18 +197,27 @@
   (n-untagged-slots 0 :type index)
   ;; Definition location
   (source-location nil)
+  ;; If this layout is for an object of metatype STANDARD-CLASS,
+  ;; these are the EFFECTIVE-SLOT-DEFINITION metaobjects.
+  (slot-list nil :type list)
   ;; Information about slots in the class to PCL: this provides fast
   ;; access to slot-definitions and locations by name, etc.
   (slot-table #(nil) :type simple-vector)
   ;; True IFF the layout belongs to a standand-instance or a
-  ;; standard-funcallable-instance -- that is, true only if the layout
-  ;; is really a wrapper.
-  ;;
-  ;; FIXME: If we unify wrappers and layouts this can go away, since
-  ;; it is only used in SB-PCL::EMIT-FETCH-WRAPPERS, which can then
-  ;; use INSTANCE-SLOTS-LAYOUT instead (if there is are no slot
-  ;; layouts, there are no slots for it to pull.)
-  (for-std-class-p nil :type boolean :read-only t))
+  ;; standard-funcallable-instance.
+  ;; Old comment was:
+  ;;   FIXME: If we unify wrappers and layouts this can go away, since
+  ;;   it is only used in SB-PCL::EMIT-FETCH-WRAPPERS, which can then
+  ;;   use INSTANCE-SLOTS-LAYOUT instead (if there is are no slot
+  ;;   layouts, there are no slots for it to pull.)
+  ;; But while that's conceivable, it still seems advantageous to have
+  ;; a single bit that decides whether something is STANDARD-OBJECT.
+  (%for-std-class-b 0 :type bit :read-only t))
+
+(declaim (freeze-type layout)) ; Good luck hot-patching new subtypes of LAYOUT
+
+(declaim (inline layout-for-std-class-p))
+(defun layout-for-std-class-p (x) (not (zerop (layout-%for-std-class-b x))))
 
 (def!method print-object ((layout layout) stream)
   (print-unreadable-object (layout stream :type t :identity t)
@@ -700,18 +709,12 @@
   ;; PCL class, if any
   (pcl-class nil))
 
-(defun find-classoid-cell (name &key create errorp)
+(defun find-classoid-cell (name &key create)
   (let ((real-name (uncross name)))
     (cond ((info :type :classoid-cell real-name))
           (create
            (sb!c::atomically-get-or-put-symbol-info
-            :type :classoid-cell real-name (make-classoid-cell real-name)))
-          (errorp
-           (error 'simple-type-error
-                  :datum nil
-                  :expected-type 'class
-                  :format-control "Class not yet defined: ~S"
-                  :format-arguments (list name))))))
+            :type :classoid-cell real-name (make-classoid-cell real-name))))))
 
 (eval-when (#-sb-xc :compile-toplevel :load-toplevel :execute)
 
@@ -719,8 +722,14 @@
   ;; then NIL is returned when no such class exists."
   (defun find-classoid (name &optional (errorp t))
     (declare (type symbol name))
-    (let ((cell (find-classoid-cell name :errorp errorp)))
-      (when cell (classoid-cell-classoid cell))))
+    (let ((cell (find-classoid-cell name)))
+      (cond ((and cell (classoid-cell-classoid cell)))
+            (errorp
+             (error 'simple-type-error
+                    :datum nil
+                    :expected-type 'class
+                    :format-control "Class not yet defined: ~S"
+                    :format-arguments (list name))))))
 
   (defun (setf find-classoid) (new-value name)
     #-sb-xc (declare (type (or null classoid) new-value))
@@ -1556,7 +1565,7 @@
 
 (!cold-init-forms
   #-sb-xc-host (/show0 "about to set *BUILT-IN-CLASS-CODES*")
-  (setq *built-in-class-codes*
+  (setq **built-in-class-codes**
         (let* ((initial-element
                 (locally
                   ;; KLUDGE: There's a FIND-CLASSOID DEFTRANSFORM for
@@ -1573,7 +1582,7 @@
               (let ((layout (classoid-layout (find-classoid name))))
                 (dolist (code codes)
                   (setf (svref res code) layout)))))))
-  (setq *null-classoid-layout*
+  (setq **null-classoid-layout**
         ;; KLUDGE: we use (LET () ...) instead of a LOCALLY here to
         ;; work around a bug in the LOCALLY handling in the fopcompiler
         ;; (present in 0.9.13-0.9.14.18). -- JES, 2006-07-16
