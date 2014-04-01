@@ -45,7 +45,7 @@
 ;;;; of the compiler.
 
 ;;; the type of LAYOUT-DEPTHOID slot values
-(def!type sb!kernel::layout-depthoid () '(or index (integer -1 -1)))
+(def!type layout-depthoid () '(or index (integer -1 -1)))
 
 ;;; possible values for the INLINE-ness of a function.
 (deftype inlinep ()
@@ -104,7 +104,6 @@
 (defvar *failure-p*)
 (defvar *fixup-notes*)
 (defvar *in-pack*)
-(defvar *info-environment*)
 #!+inline-constants
 (progn
   (defvar *constant-segment*)
@@ -186,7 +185,7 @@ the stack without triggering overflow protection.")
     ;; and then we happen to compile bar.lisp before foo.lisp.
   (when (looks-like-name-of-special-var-p symbol)
     ;; FIXME: should be COMPILER-STYLE-WARNING?
-    (style-warn 'sb!kernel:asterisks-around-lexical-variable-name
+    (style-warn 'asterisks-around-lexical-variable-name
                 :format-control
                 "using the lexical binding of the symbol ~
                  ~/sb-impl::print-symbol-with-prefix/, not the~@

@@ -478,20 +478,21 @@
             (type-equal (function-type 'mars) '(function (t t) *)))
   t t)
 
-;; DEFSTRUCT created functions
-
-;; These do not yet work because SB-KERNEL:%FUN-NAME does not work on
-;; functions defined by DEFSTRUCT. (1.0.35.x)
-
-;; See LP #520692.
-
-#+nil
 (progn
 
   (defstruct (struct (:predicate our-struct-p)
                      (:copier copy-our-struct))
     (a 42 :type fixnum))
 
+  ;; This test doesn't work because the XEP for the out-of-line accessor
+  ;; does not include the type test, and the function gets a signature
+  ;; of (FUNCTION (T) (VALUES FIXNUM &OPTIONAL)). This can easily be fixed
+  ;; by deleting (THE <struct> INSTANCE) from the access form
+  ;; and correspondingly adding a declaration on the type of INSTANCE.
+  ;;
+  ;; Yes, it can be fixed, but it is done this way because it produces
+  ;; smaller code.
+  #+nil
   (deftest function-type+defstruct.1
       (values (type-equal (function-type 'struct-a)
                           (function-type #'struct-a))
@@ -531,7 +532,7 @@
                           '(function (t) (values (member t nil) &optional))))
     t t)
 
-  ) ; #+nil (progn ...
+  )
 
 ;; SETF functions
 

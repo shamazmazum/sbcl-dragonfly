@@ -848,21 +848,18 @@
                           #!+alpha (* 2 n)))
                       (* os-context-t)))
 
-;;;; Perform the lookup which FOREIGN-SYMBOL-ADDRESS would do if the
-;;;; linkage table were disabled, i.e. always return the actual symbol
-;;;; address, not the linkage table trampoline, even if the symbol would
-;;;; ordinarily go through the linkage table.  Important when
-;;;; SB-DYNAMIC-CORE is enabled and our caller assumes `name' to be a
-;;;; "static" symbol; a concept which doesn't exist in such builds.
-(defun true-foreign-symbol-address (name)
-  #!+linkage-table  ;we have dlsym -- let's use it.
+;;; On SB-DYNAMIC-CORE symbols which come from the runtime go through
+;;; an indirection table, but the debugger needs to know the actual
+;;; address.
+(defun static-foreign-symbol-address (name)
+  #!+sb-dynamic-core
   (find-dynamic-foreign-symbol-address name)
-  #!-linkage-table  ;possibly no dlsym, but hence no indirection anyway.
-  (foreign-symbol-address))
+  #!-sb-dynamic-core
+  (foreign-symbol-address name))
 
 ;;;; See above.
-(defun true-foreign-symbol-sap (name)
-  (int-sap (true-foreign-symbol-address name)))
+(defun static-foreign-symbol-sap (name)
+  (int-sap (static-foreign-symbol-address name)))
 
 #!+(or x86 x86-64)
 (defun find-escaped-frame (frame-pointer)
@@ -886,10 +883,10 @@
               ;; KLUDGE: Detect undefined functions by a range-check
               ;; against the trampoline address and the following
               ;; function in the runtime.
-              (if (< (true-foreign-symbol-address "undefined_tramp")
+              (if (< (static-foreign-symbol-address "undefined_tramp")
                      (sap-int (sb!vm:context-pc context))
-                     (true-foreign-symbol-address #!+x86 "closure_tramp"
-                                                    #!+x86-64 "alloc_tramp"))
+                     (static-foreign-symbol-address #!+x86 "closure_tramp"
+                                                  #!+x86-64 "alloc_tramp"))
                   (return (values :undefined-function 0 context))
                   (return (values code 0 context))))
             (let* ((code-header-len (* (get-header-data code)
@@ -2075,16 +2072,16 @@ register."
                   ,@body)
                #!-(or x86 x86-64)
                `(let ((,var (if escaped
-                                (sb!sys:int-sap
+                                (int-sap
                                  (sb!vm:context-register escaped
                                                          sb!vm::nfp-offset))
                                 #!-alpha
-                                (sb!sys:sap-ref-sap fp (* nfp-save-offset
-                                                          sb!vm:n-word-bytes))
+                                (sap-ref-sap fp (* nfp-save-offset
+                                                   sb!vm:n-word-bytes))
                                 #!+alpha
                                 (sb!vm::make-number-stack-pointer
-                                 (sb!sys:sap-ref-32 fp (* nfp-save-offset
-                                                          sb!vm:n-word-bytes))))))
+                                 (sap-ref-32 fp (* nfp-save-offset
+                                                   sb!vm:n-word-bytes))))))
                   ,@body))
              (stack-frame-offset (data-width offset)
                #!+(or x86 x86-64)
@@ -2108,7 +2105,7 @@ register."
          (code-char val)))
       (#.sb!vm:sap-reg-sc-number
        (with-escaped-value (val)
-         (sb!sys:int-sap val)))
+         (int-sap val)))
       (#.sb!vm:signed-reg-sc-number
        (with-escaped-value (val)
          (if (logbitp (1- sb!vm:n-word-bits) val)
@@ -2141,47 +2138,47 @@ register."
                                     #!-(or sparc x86 x86-64) 0))
       (#.sb!vm:single-stack-sc-number
        (with-nfp (nfp)
-         (sb!sys:sap-ref-single nfp (stack-frame-offset 1 0))))
+         (sap-ref-single nfp (stack-frame-offset 1 0))))
       (#.sb!vm:double-stack-sc-number
        (with-nfp (nfp)
-         (sb!sys:sap-ref-double nfp (stack-frame-offset 2 0))))
+         (sap-ref-double nfp (stack-frame-offset 2 0))))
       #!+long-float
       (#.sb!vm:long-stack-sc-number
        (with-nfp (nfp)
-         (sb!sys:sap-ref-long nfp (stack-frame-offset 3 0))))
+         (sap-ref-long nfp (stack-frame-offset 3 0))))
       (#.sb!vm:complex-single-stack-sc-number
        (with-nfp (nfp)
          (complex
-          (sb!sys:sap-ref-single nfp (stack-frame-offset 1 0))
-          (sb!sys:sap-ref-single nfp (stack-frame-offset 1 1)))))
+          (sap-ref-single nfp (stack-frame-offset 1 0))
+          (sap-ref-single nfp (stack-frame-offset 1 1)))))
       (#.sb!vm:complex-double-stack-sc-number
        (with-nfp (nfp)
          (complex
-          (sb!sys:sap-ref-double nfp (stack-frame-offset 2 0))
-          (sb!sys:sap-ref-double nfp (stack-frame-offset 2 2)))))
+          (sap-ref-double nfp (stack-frame-offset 2 0))
+          (sap-ref-double nfp (stack-frame-offset 2 2)))))
       #!+long-float
       (#.sb!vm:complex-long-stack-sc-number
        (with-nfp (nfp)
          (complex
-          (sb!sys:sap-ref-long nfp (stack-frame-offset 3 0))
-          (sb!sys:sap-ref-long nfp
-                               (stack-frame-offset 3 #!+sparc 4
-                                                   #!+(or x86 x86-64) 3
-                                                   #!-(or sparc x86 x86-64) 0)))))
+          (sap-ref-long nfp (stack-frame-offset 3 0))
+          (sap-ref-long nfp
+                        (stack-frame-offset 3 #!+sparc 4
+                                              #!+(or x86 x86-64) 3
+                                              #!-(or sparc x86 x86-64) 0)))))
       (#.sb!vm:control-stack-sc-number
        (stack-ref fp (sb!c:sc-offset-offset sc-offset)))
       (#.sb!vm:character-stack-sc-number
        (with-nfp (nfp)
-         (code-char (sb!sys:sap-ref-word nfp (stack-frame-offset 1 0)))))
+         (code-char (sap-ref-word nfp (stack-frame-offset 1 0)))))
       (#.sb!vm:unsigned-stack-sc-number
        (with-nfp (nfp)
-         (sb!sys:sap-ref-word nfp (stack-frame-offset 1 0))))
+         (sap-ref-word nfp (stack-frame-offset 1 0))))
       (#.sb!vm:signed-stack-sc-number
        (with-nfp (nfp)
-         (sb!sys:signed-sap-ref-word nfp (stack-frame-offset 1 0))))
+         (signed-sap-ref-word nfp (stack-frame-offset 1 0))))
       (#.sb!vm:sap-stack-sc-number
        (with-nfp (nfp)
-         (sb!sys:sap-ref-sap nfp (stack-frame-offset 1 0)))))))
+         (sap-ref-sap nfp (stack-frame-offset 1 0)))))))
 
 ;;; This stores value as the value of DEBUG-VAR in FRAME. In the
 ;;; COMPILED-DEBUG-VAR case, access the current value to determine if
@@ -3219,9 +3216,9 @@ register."
   (without-gcing
    ;; These are really code labels, not variables: but this way we get
    ;; their addresses.
-   (let* ((src-start (true-foreign-symbol-sap "fun_end_breakpoint_guts"))
-          (src-end (true-foreign-symbol-sap "fun_end_breakpoint_end"))
-          (trap-loc (true-foreign-symbol-sap "fun_end_breakpoint_trap"))
+   (let* ((src-start (static-foreign-symbol-sap "fun_end_breakpoint_guts"))
+          (src-end (static-foreign-symbol-sap "fun_end_breakpoint_end"))
+          (trap-loc (static-foreign-symbol-sap "fun_end_breakpoint_trap"))
           (length (sap- src-end src-start))
           (code-object
            (sb!c:allocate-code-object (1+ bogus-lra-constants) length))

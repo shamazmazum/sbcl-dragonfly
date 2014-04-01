@@ -377,17 +377,7 @@ If an unsupported TYPE is requested, the function will return NIL.
                     (sb-eval:interpreted-function-source-location object))))
        source))
     (function
-     (cond ((struct-accessor-p object)
-            (find-definition-source
-             (struct-accessor-structure-class object)))
-           ((struct-predicate-p object)
-            (find-definition-source
-             (struct-predicate-structure-class object)))
-           ((struct-copier-p object)
-            (find-definition-source
-             (struct-copier-structure-class object)))
-           (t
-            (find-function-definition-source object))))
+     (find-function-definition-source object))
     ((or condition standard-object structure-object)
      (find-definition-source (class-of object)))
     (t
@@ -431,35 +421,6 @@ If an unsupported TYPE is requested, the function will return NIL.
            (list number)))
        :plist (sb-c:definition-source-location-plist location))
       (make-definition-source)))
-
-;;; This is kludgey.  We expect these functions (the underlying functions,
-;;; not the closures) to be in static space and so not move ever.
-;;; FIXME It's also possibly wrong: not all structures use these vanilla
-;;; accessors, e.g. when the :type option is used
-(defvar *struct-slotplace-reader*
-  (sb-vm::%simple-fun-self #'definition-source-pathname))
-(defvar *struct-slotplace-writer*
-  (sb-vm::%simple-fun-self #'(setf definition-source-pathname)))
-(defvar *struct-predicate*
-  (sb-vm::%simple-fun-self #'definition-source-p))
-(defvar *struct-copier*
-  (sb-vm::%simple-fun-self #'copy-definition-source))
-
-(defun struct-accessor-p (function)
-  (let ((self (sb-vm::%simple-fun-self function)))
-    ;; FIXME there are other kinds of struct accessor.  Fill out this list
-    (member self (list *struct-slotplace-reader*
-                       *struct-slotplace-writer*))))
-
-(defun struct-copier-p (function)
-  (let ((self (sb-vm::%simple-fun-self function)))
-    ;; FIXME there may be other structure copier functions
-    (member self (list *struct-copier*))))
-
-(defun struct-predicate-p (function)
-  (let ((self (sb-vm::%simple-fun-self function)))
-    ;; FIXME there may be other structure predicate functions
-    (member self (list *struct-predicate*))))
 
 (sb-int:define-deprecated-function :late "1.0.24.5" function-arglist function-lambda-list
     (function)
@@ -526,39 +487,6 @@ value."
          (if type
              type
              (sb-impl::%fun-type function-designator)))))))
-
-;;; FIXME: These three are pretty terrible. Can we place have some proper metadata
-;;; instead.
-
-(defun struct-accessor-structure-class (function)
-  (let ((self (sb-vm::%simple-fun-self function)))
-    (cond
-      ((member self (list *struct-slotplace-reader* *struct-slotplace-writer*))
-       (find-class
-        (sb-kernel::classoid-name
-         (sb-kernel::layout-classoid
-          (sb-kernel:%closure-index-ref function 1)))))
-      )))
-
-(defun struct-copier-structure-class (function)
-  (let ((self (sb-vm::%simple-fun-self function)))
-    (cond
-      ((member self (list *struct-copier*))
-       (find-class
-        (sb-kernel::classoid-name
-         (sb-kernel::layout-classoid
-          (sb-kernel:%closure-index-ref function 0)))))
-      )))
-
-(defun struct-predicate-structure-class (function)
-  (let ((self (sb-vm::%simple-fun-self function)))
-    (cond
-      ((member self (list *struct-predicate*))
-       (find-class
-        (sb-kernel::classoid-name
-         (sb-kernel::layout-classoid
-          (sb-kernel:%closure-index-ref function 0)))))
-      )))
 
 ;;;; find callers/callees, liberated from Helmut Eller's code in SLIME
 
@@ -654,40 +582,20 @@ constant pool."
 ;; Call FUNCTION with two args, NAME and VALUE, for each value that is
 ;; either the FDEFINITION or MACRO-FUNCTION of some global name.
 ;;
-(defun call-with-each-global-functional (function)
-  (macrolet ((maybe-call-function ()
-               `(when (or (and (eq type-number (info-num :definition))
-                               (not (eq (sb-int:info :function :kind name)
-                                        :macro)))
-                          (eq type-number (info-num :macro-function)))
-                  (funcall function name value)))
-             (info-num (type)
-               (sb-c::type-info-number
-                (sb-c::type-info-or-lose :function type))))
-    ;; Pass 1 is for symbols. WITH-PACKAGE-ITERATOR helps avoid the problem
-    ;; of duplicate symbols, since we can compare the fourth value against
-    ;; the symbol's home package.
-    (with-package-iterator (iterate (list-all-packages) :internal :external)
-      (loop
-         (multiple-value-bind (foundp sym access package) (iterate)
-           (declare (ignore access))
-           (cond ((not foundp) (return))
-                 ((eq (symbol-package sym) package)
-                  (sb-c::call-with-each-info (lambda (name type-number value)
-                                               (maybe-call-function))
-                                             sym))))))
-    ;; Pass 2 is over global environments. This is slightly wrong, as newer env
-    ;; structures shadow older ones, but a name/type can be found in several.
-    ;; We should suppress dups somehow. It doesn't matter for fdefinitions,
-    ;; because they are permanently attached to their name in globaldb,
-    ;; but anomalies are possible with macros.
-    (dolist (env sb-c::*info-environment*)
-      (sb-c::do-info (env :type-number type-number :name name :value value)
-        (maybe-call-function)))))
+(defun call-with-each-global-functoid (function)
+  (sb-c::call-with-each-globaldb-name
+   (lambda (name)
+     ;; In general it might be unsafe to call INFO with a NAME that is not
+     ;; valid for the kind of info being retrieved, as when the defaulting
+     ;; function tries to perform a sanity-check. But here it's safe.
+     (let ((functoid (or (sb-int:info :function :macro-function name)
+                         (sb-int:info :function :definition name))))
+             (if functoid
+                 (funcall function name functoid))))))
 
 (defun collect-xref (kind-index wanted-name)
   (let ((ret nil))
-    (call-with-each-global-functional
+    (call-with-each-global-functoid
      (lambda (info-name value)
           ;; Get a simple-fun for the definition, and an xref array
           ;; from the table if available.
@@ -1070,12 +978,17 @@ Experimental: interface subject to change."
              ;; We don't have GLOBAL-BOUNDP, and there's no ERRORP arg.
              (call (sb-ext:symbol-global-value object))
            (unbound-variable ()))
+         ;; These first two are probably unnecessary.
+         ;; The functoid values, if present, are in SYMBOL-INFO
+         ;; which is traversed whether or not EXT was true.
+         ;; But should we traverse SYMBOL-INFO?
+         ;; I don't know what is expected of this interface.
          (when (and ext (ignore-errors (fboundp object)))
            (call (fdefinition object))
            (call (macro-function object))
            (let ((class (find-class object nil)))
              (when class (call class))))
-         (call (symbol-plist object))
+         (call (symbol-plist object)) ; perhaps SB-KERNEL:SYMBOL-INFO instead?
          (call (symbol-name object))
          (unless simple
            (call (symbol-package object))))

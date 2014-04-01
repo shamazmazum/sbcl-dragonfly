@@ -157,7 +157,7 @@ sufficiently motivated to do lengthy fixes."
   (labels ((restart-lisp ()
              (handling-end-of-the-world
                (reinit)
-               #!+hpux (sb!sys:%primitive sb!vm::setup-return-from-lisp-stub)
+               #!+hpux (%primitive sb!vm::setup-return-from-lisp-stub)
                (funcall toplevel)))
            (foreign-bool (value)
              (if value 1 0))
@@ -203,9 +203,6 @@ sufficiently motivated to do lengthy fixes."
                    :environment-name environment-name)
            (save-core nil))
           (t
-           ;; Compact the environment even though we're skipping the
-           ;; other purification stages.
-           (sb!kernel::compact-environment-aux "Auxiliary" 200)
            (save-core t)))
     ;; Something went very wrong -- reinitialize to have a prayer
     ;; of being able to report the error.
