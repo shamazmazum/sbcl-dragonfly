@@ -339,16 +339,16 @@ process_directory(int fd, lispobj *ptr, int count, os_vm_offset_t file_offset)
 #ifdef LISP_FEATURE_GENCGC
             if (addr != (os_vm_address_t)DYNAMIC_SPACE_START) {
                 fprintf(stderr, "in core: 0x%p; in runtime: 0x%p \n",
-                        (uword_t)addr, (uword_t)DYNAMIC_SPACE_START);
+                        (void*)addr, (void*)DYNAMIC_SPACE_START);
                 lose("core/runtime address mismatch: DYNAMIC_SPACE_START\n");
             }
 #else
             if ((addr != (os_vm_address_t)DYNAMIC_0_SPACE_START) &&
                 (addr != (os_vm_address_t)DYNAMIC_1_SPACE_START)) {
                 fprintf(stderr, "in core: 0x%p; in runtime: 0x%p or 0x%p\n",
-                        (uword_t)addr,
-                        (uword_t)DYNAMIC_0_SPACE_START,
-                        (uword_t)DYNAMIC_1_SPACE_START);
+                        (void*)addr,
+                        (void*)DYNAMIC_0_SPACE_START,
+                        (void*)DYNAMIC_1_SPACE_START);
                 lose("warning: core/runtime address mismatch: DYNAMIC_SPACE_START\n");
             }
 #endif
@@ -366,14 +366,14 @@ process_directory(int fd, lispobj *ptr, int count, os_vm_offset_t file_offset)
         case STATIC_CORE_SPACE_ID:
             if (addr != (os_vm_address_t)STATIC_SPACE_START) {
                 fprintf(stderr, "in core: 0x%p - in runtime: 0x%p\n",
-                        (uword_t)addr, (uword_t)STATIC_SPACE_START);
+                        (void*)addr, (void*)STATIC_SPACE_START);
                 lose("core/runtime address mismatch: STATIC_SPACE_START\n");
             }
             break;
         case READ_ONLY_CORE_SPACE_ID:
             if (addr != (os_vm_address_t)READ_ONLY_SPACE_START) {
                 fprintf(stderr, "in core: 0x%p - in runtime: 0x%p\n",
-                        (uword_t)addr, (uword_t)READ_ONLY_SPACE_START);
+                        (void*)addr, (void*)READ_ONLY_SPACE_START);
                 lose("core/runtime address mismatch: READ_ONLY_SPACE_START\n");
             }
             break;
@@ -430,15 +430,6 @@ load_core_file(char *file, os_vm_offset_t file_offset)
 
         case END_CORE_ENTRY_TYPE_CODE:
             SHOW("END_CORE_ENTRY_TYPE_CODE case");
-            break;
-
-        case VERSION_CORE_ENTRY_TYPE_CODE:
-            SHOW("VERSION_CORE_ENTRY_TYPE_CODE case");
-            if (*ptr != SBCL_CORE_VERSION_INTEGER) {
-                lose("core file version (%d) != runtime library version (%d)\n",
-                     *ptr,
-                     SBCL_CORE_VERSION_INTEGER);
-            }
             break;
 
         case BUILD_ID_CORE_ENTRY_TYPE_CODE:

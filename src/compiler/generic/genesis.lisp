@@ -39,30 +39,6 @@
           (ash (sb!xc:char-code #\C) 8)
           (sb!xc:char-code #\L)))
 
-;;; the current version of SBCL core files
-;;;
-;;; FIXME: This is left over from CMU CL, and not well thought out.
-;;; It's good to make sure that the runtime doesn't try to run core
-;;; files from the wrong version, but a single number is not the ideal
-;;; way to do this in high level data like this (as opposed to e.g. in
-;;; IP packets), and in fact the CMU CL version number never ended up
-;;; being incremented past 0. A better approach might be to use a
-;;; string which is set from CVS data. (Though now as of sbcl-0.7.8 or
-;;; so, we have another problem that the core incompatibility
-;;; detection mechanisms are on such a hair trigger -- with even
-;;; different builds from the same sources being considered
-;;; incompatible -- that any coarser-grained versioning mechanisms
-;;; like this are largely irrelevant as long as the hair-triggering
-;;; persists.)
-;;;
-;;; 0: inherited from CMU CL
-;;; 1: rearranged static symbols for sbcl-0.6.8
-;;; 2: eliminated non-ANSI %DEFCONSTANT/%%DEFCONSTANT support,
-;;;    deleted a slot from DEBUG-SOURCE structure
-;;; 3: added build ID to cores to discourage sbcl/.core mismatch
-;;; 4: added gc page table data
-(defconstant sbcl-core-version-integer 4)
-
 (defun round-up (number size)
   #!+sb-doc
   "Round NUMBER up to be an integral multiple of SIZE."
@@ -577,18 +553,18 @@
   #!+sb-doc
   "Write VALUE displaced INDEX words from ADDRESS."
   ;; If we're passed a symbol as a value then it needs to be interned.
-  (when (symbolp value) (setf value (cold-intern value)))
-  (if (eql (descriptor-gspace value) :load-time-value)
-    (note-load-time-value-reference address
-                                    (- (ash index sb!vm:word-shift)
-                                       (logand (descriptor-bits address)
-                                               sb!vm:lowtag-mask))
-                                    value)
-    (let* ((bytes (gspace-bytes (descriptor-intuit-gspace address)))
-           (byte-index (ash (+ index (descriptor-word-offset address))
-                               sb!vm:word-shift)))
-      (setf (bvref-word bytes byte-index)
-            (descriptor-bits value)))))
+  (let ((value (cond ((symbolp value) (cold-intern value))
+                     (t value))))
+    (if (eql (descriptor-gspace value) :load-time-value)
+        (note-load-time-value-reference address
+                                        (- (ash index sb!vm:word-shift)
+                                           (logand (descriptor-bits address)
+                                                   sb!vm:lowtag-mask))
+                                        value)
+        (let* ((bytes (gspace-bytes (descriptor-intuit-gspace address)))
+               (byte-index (ash (+ index (descriptor-word-offset address))
+                                sb!vm:word-shift)))
+          (setf (bvref-word bytes byte-index) (descriptor-bits value))))))
 
 (declaim (ftype (function (descriptor (or symbol descriptor))) write-memory))
 (defun write-memory (address value)
@@ -825,6 +801,80 @@ core and return a descriptor to it."
 
 ;;;; symbol magic
 
+;; Simulate *FREE-TLS-INDEX*. This is a count, not a displacement.
+;; In C, sizeof counts 1 word for the variable-length interrupt_contexts[]
+;; but primitive-object-size counts 0, so add 1, though in fact the C code
+;; implies that it might have overcounted by 1. We could make this agnostic
+;; of MAX-INTERRUPTS by moving the thread base register up by TLS-SIZE words,
+;; using negative offsets for all dynamically assigned indices.
+(defvar *genesis-tls-counter*
+  (+ 1 sb!vm::max-interrupts
+     (sb!vm:primitive-object-size
+      (find 'sb!vm::thread sb!vm:*primitive-objects*
+            :key #'sb!vm:primitive-object-name))))
+
+#!+sb-thread
+(progn
+  ;; Assign SYMBOL the tls-index INDEX. SYMBOL must be a descriptor.
+  ;; This is a backend support routine, but the style within this file
+  ;; is to conditionalize by the target features.
+  (defun cold-assign-tls-index (symbol index)
+    #!+x86-64
+    (let ((header-word
+           (logior (ash index 32)
+                   (descriptor-bits (read-wordindexed symbol 0)))))
+      (write-wordindexed symbol 0 (make-random-descriptor header-word)))
+    #!-x86-64
+    (write-wordindexed symbol sb!vm:symbol-tls-index-slot
+                       (make-random-descriptor index)))
+
+  ;; Return SYMBOL's tls-index,
+  ;; choosing a new index if it doesn't have one yet.
+  (defun ensure-symbol-tls-index (symbol)
+    (let* ((cold-sym (cold-intern symbol))
+           (tls-index
+            #!+x86-64
+            (ldb (byte 32 32) (descriptor-bits (read-wordindexed cold-sym 0)))
+            #!-x86-64
+            (descriptor-bits
+             (read-wordindexed cold-sym sb!vm:symbol-tls-index-slot))))
+      (unless (plusp tls-index)
+        (let ((next (prog1 *genesis-tls-counter* (incf *genesis-tls-counter*))))
+          (setq tls-index (ash next sb!vm:word-shift))
+          (cold-assign-tls-index cold-sym tls-index)))
+      tls-index)))
+
+;; A table of special variable names which get known TLS indices.
+;; Some of them are mapped onto 'struct thread' and have pre-determined offsets.
+;; Others are static symbols used with bind_variable() in the C runtime,
+;; and might not, in the absence of this table, get an index assigned by genesis
+;; depending on whether the cross-compiler used the BIND vop on them.
+;; Indices for those static symbols can be chosen arbitrarily, which is to say
+;; the value doesn't matter but must update the tls-counter correctly.
+;; All symbols other than the ones in this table get the indices assigned
+;; by the fasloader on demand.
+#!+sb-thread
+(defvar *known-tls-symbols*
+    ;; FIXME: no mechanism exists to determine which static symbols C code will
+    ;; dynamically bind. TLS is a finite resource, and wasting indices for all
+    ;; static symbols isn't the best idea. This list was hand-made with 'grep'.
+                  '(sb!vm:*alloc-signal*
+                    sb!sys:*allow-with-interrupts*
+                    sb!vm:*current-catch-block*
+                    sb!vm::*current-unwind-protect-block*
+                    sb!kernel:*free-interrupt-context-index*
+                    sb!kernel:*gc-inhibit*
+                    sb!kernel:*gc-pending*
+                    sb!impl::*gc-safe*
+                    sb!impl::*in-safepoint*
+                    sb!sys:*interrupt-pending*
+                    sb!sys:*interrupts-enabled*
+                    sb!vm::*pinned-objects*
+                    sb!kernel:*restart-clusters*
+                    sb!kernel:*stop-for-gc-pending*
+                    #!+sb-thruption
+                    sb!sys:*thruption-pending*))
+
 ;;; Allocate (and initialize) a symbol.
 (defun allocate-symbol (name &key (gspace *dynamic*))
   (declare (simple-string name))
@@ -841,6 +891,16 @@ core and return a descriptor to it."
                        (base-string-to-core name *dynamic*))
     (write-wordindexed symbol sb!vm:symbol-package-slot *nil-descriptor*)
     symbol))
+
+#!+sb-thread
+(defun assign-tls-index (symbol cold-symbol)
+  (let ((index (info :variable :wired-tls symbol)))
+    (cond ((integerp index) ; thread slot
+           (cold-assign-tls-index cold-symbol index))
+          ((memq symbol *known-tls-symbols*)
+           ;; symbols without which the C runtime could not start
+           (shiftf index *genesis-tls-counter* (1+ *genesis-tls-counter*))
+           (cold-assign-tls-index cold-symbol (ash index sb!vm:word-shift))))))
 
 ;;; Set the cold symbol value of SYMBOL-OR-SYMBOL-DES, which can be either a
 ;;; descriptor of a cold symbol or (in an abbreviation for the
@@ -1136,6 +1196,8 @@ core and return a descriptor to it."
     (unless cold-intern-info
       (cond ((eq (symbol-package-for-target-symbol symbol) package)
              (let ((handle (allocate-symbol (symbol-name symbol) :gspace gspace)))
+               #!+sb-thread
+               (assign-tls-index symbol handle)
                (setf (gethash (descriptor-bits handle) *cold-symbols*) symbol)
                (when (eq package *keyword-package*)
                  (cold-set handle handle))
@@ -1275,6 +1337,13 @@ core and return a descriptor to it."
   (cold-set '*free-interrupt-context-index* (make-fixnum-descriptor 0))
 
   (cold-set '*!initial-layouts* (cold-list-all-layouts))
+
+  #!+sb-thread
+  (progn
+    (cold-set 'sb!vm::*free-tls-index*
+              (make-random-descriptor (ash *genesis-tls-counter*
+                                           sb!vm:word-shift)))
+    (cold-set 'sb!vm::*tls-index-lock* (make-fixnum-descriptor 0)))
 
   (/show "dumping packages" (mapcar #'car *cold-package-symbols*))
   (let ((initial-symbols *nil-descriptor*))
@@ -2587,6 +2656,15 @@ core and return a descriptor to it."
     (write-wordindexed fn sb!vm::simple-fun-info-slot info)
     fn))
 
+#!+sb-thread
+(define-cold-fop (fop-symbol-tls-fixup)
+  (let* ((symbol (pop-stack))
+         (kind (pop-stack))
+         (code-object (pop-stack)))
+    (do-cold-fixup code-object (read-word-arg) (ensure-symbol-tls-index symbol)
+                   kind)
+    code-object))
+
 (define-cold-fop (fop-foreign-fixup)
   (let* ((kind (pop-stack))
          (code-object (pop-stack))
@@ -2750,10 +2828,8 @@ core and return a descriptor to it."
     (format t "#define LISP_FEATURE_~A~%" shebang-feature-name))
   (terpri)
   ;; and miscellaneous constants
-  (format t "#define SBCL_CORE_VERSION_INTEGER ~D~%" sbcl-core-version-integer)
-  (format t
-          "#define SBCL_VERSION_STRING ~S~%"
-          (sb!xc:lisp-implementation-version))
+  (format t "#define SBCL_VERSION_STRING ~S~%"
+            (sb!xc:lisp-implementation-version))
   (format t "#define CORE_MAGIC 0x~X~%" core-magic)
   (format t "#ifndef LANGUAGE_ASSEMBLY~2%")
   (format t "#define LISPOBJ(x) ((lispobj)x)~2%")
@@ -2820,7 +2896,7 @@ core and return a descriptor to it."
               (maybe-record-with-munged-name "-TRAP" "trap_" 3)
               (maybe-record-with-munged-name "-SUBTYPE" "subtype_" 4)
               (maybe-record-with-munged-name "-SC-NUMBER" "sc_" 5)
-              (maybe-record-with-translated-name '("-SIZE") 6)
+              (maybe-record-with-translated-name '("-SIZE" "-INTERRUPTS") 6)
               (maybe-record-with-translated-name '("-START" "-END" "-PAGE-BYTES"
                                                    "-CARD-BYTES" "-GRANULARITY")
                                                  7 :large t)
@@ -3094,8 +3170,7 @@ initially undefined function references:~2%")
 ;;; all in an easily recognizable range, and displacing the range away from
 ;;; zero seems likely to reduce the chance that random garbage will be
 ;;; misinterpreted as a .core file.)
-(defconstant version-core-entry-type-code 3860)
-(defconstant build-id-core-entry-type-code 3899)
+(defconstant build-id-core-entry-type-code 3860)
 (defconstant new-directory-core-entry-type-code 3861)
 (defconstant initial-fun-core-entry-type-code 3863)
 (defconstant page-table-core-entry-type-code 3880)
@@ -3188,15 +3263,9 @@ initially undefined function references:~2%")
       ;; Write the magic number.
       (write-word core-magic)
 
-      ;; Write the Version entry.
-      (write-word version-core-entry-type-code)
-      (write-word 3)
-      (write-word sbcl-core-version-integer)
-
       ;; Write the build ID.
       (write-word build-id-core-entry-type-code)
-      (let ((build-id (with-open-file (s "output/build-id.tmp"
-                                         :direction :input)
+      (let ((build-id (with-open-file (s "output/build-id.tmp")
                         (read s))))
         (declare (type simple-string build-id))
         (/show build-id (length build-id))

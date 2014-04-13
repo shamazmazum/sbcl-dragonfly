@@ -240,7 +240,7 @@
   (append
    *common-static-symbols*
    *c-callable-static-symbols*
-   '(*alien-stack*
+   '(*alien-stack-pointer*
 
      ;; interrupt handling
      *pseudo-atomic-bits*

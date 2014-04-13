@@ -196,7 +196,7 @@ This is SETFable."
                         ,(append *new-auxiliary-types*
                                  (auxiliary-type-definitions env))))
        #!+(or x86 x86-64)
-       (let ((sb!vm::*alien-stack* sb!vm::*alien-stack*))
+       (let ((sb!vm::*alien-stack-pointer* sb!vm::*alien-stack-pointer*))
          ,@body)
        #!-(or x86 x86-64)
        ,@body)))
@@ -596,6 +596,9 @@ null byte.
     (error "~S isn't forced to memory. Something went wrong." alien))
   alien)
 
+;; It's not mandatory that this function not exist for x86[-64],
+;; however for sanity, it should not, because no call to it can occur.
+#!-(or x86 x86-64)
 (defun dispose-local-alien (info alien)
   (declare (ignore info))
   (cancel-finalization alien)

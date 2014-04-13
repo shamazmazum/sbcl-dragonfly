@@ -43,6 +43,8 @@
   `(make-ea :qword :base ,ptr :disp (- (* ,slot n-word-bytes) ,lowtag)))
 (defmacro make-ea-for-object-slot-half (ptr slot lowtag)
   `(make-ea :dword :base ,ptr :disp (- (* ,slot n-word-bytes) ,lowtag)))
+(defmacro tls-index-of (sym)
+  `(make-ea :dword :base ,sym :disp (+ 4 (- other-pointer-lowtag))))
 
 (defmacro loadw (value ptr &optional (slot 0) (lowtag 0))
   `(inst mov ,value (make-ea-for-object-slot ,ptr ,slot ,lowtag)))
@@ -88,46 +90,44 @@
 (defmacro store-symbol-value (reg symbol)
   `(inst mov (make-ea-for-symbol-value ,symbol) ,reg))
 
-#!+sb-thread
-(defmacro make-ea-for-symbol-tls-index (symbol)
-  `(make-ea :qword
-    :disp (+ nil-value
-           (static-symbol-offset ',symbol)
-           (ash symbol-tls-index-slot word-shift)
-           (- other-pointer-lowtag))))
+;; Return the effective address of the value slot of static SYMBOL.
+(defun static-symbol-value-ea (symbol)
+   (make-ea :qword
+            :disp (+ nil-value
+                     (static-symbol-offset symbol)
+                     (ash symbol-value-slot word-shift)
+                     (- other-pointer-lowtag))))
 
 #!+sb-thread
-(defmacro load-tl-symbol-value (reg symbol)
-  `(progn
-    (inst mov ,reg (make-ea-for-symbol-tls-index ,symbol))
-    (inst mov ,reg (make-ea :qword :base thread-base-tn :scale 1 :index ,reg))))
-#!-sb-thread
-(defmacro load-tl-symbol-value (reg symbol) `(load-symbol-value ,reg ,symbol))
+(progn
+  ;; Return an EA for the TLS of SYMBOL, or die.
+  (defun symbol-known-tls-cell (symbol)
+    (let ((index (info :variable :wired-tls symbol)))
+      (aver (integerp index))
+      (make-ea :qword :base thread-base-tn :disp index)))
 
-#!+sb-thread
-(defmacro store-tl-symbol-value (reg symbol temp)
-  `(progn
-    (inst mov ,temp (make-ea-for-symbol-tls-index ,symbol))
-    (inst mov (make-ea :qword :base thread-base-tn :scale 1 :index ,temp) ,reg)))
+  ;; LOAD/STORE-TL-SYMBOL-VALUE macros are ad-hoc (ugly) emulations
+  ;; of (INFO :VARIABLE :WIRED-TLS) = :ALWAYS-THREAD-LOCAL
+  (defmacro load-tl-symbol-value (reg symbol)
+    `(inst mov ,reg (symbol-known-tls-cell ',symbol)))
+
+  (defmacro store-tl-symbol-value (reg symbol)
+    `(inst mov (symbol-known-tls-cell ',symbol) ,reg)))
+
 #!-sb-thread
-(defmacro store-tl-symbol-value (reg symbol temp)
-  (declare (ignore temp))
-  `(store-symbol-value ,reg ,symbol))
+(progn
+  (defmacro load-tl-symbol-value (reg symbol)
+    `(load-symbol-value ,reg ,symbol))
+  (defmacro store-tl-symbol-value (reg symbol)
+    `(store-symbol-value ,reg ,symbol)))
 
 (defmacro load-binding-stack-pointer (reg)
-  #!+sb-thread
-  `(inst mov ,reg (make-ea :qword :base thread-base-tn
-                   :disp (* n-word-bytes thread-binding-stack-pointer-slot)))
-  #!-sb-thread
-  `(load-symbol-value ,reg *binding-stack-pointer*))
+  #!+sb-thread `(inst mov ,reg (symbol-known-tls-cell '*binding-stack-pointer*))
+  #!-sb-thread `(load-symbol-value ,reg *binding-stack-pointer*))
 
 (defmacro store-binding-stack-pointer (reg)
-  #!+sb-thread
-  `(inst mov (make-ea :qword :base thread-base-tn
-              :disp (* n-word-bytes thread-binding-stack-pointer-slot))
-    ,reg)
-  #!-sb-thread
-  `(store-symbol-value ,reg *binding-stack-pointer*))
+  #!+sb-thread `(inst mov (symbol-known-tls-cell '*binding-stack-pointer*) ,reg)
+  #!-sb-thread `(store-symbol-value ,reg *binding-stack-pointer*))
 
 (defmacro load-type (target source &optional (offset 0))
   #!+sb-doc
