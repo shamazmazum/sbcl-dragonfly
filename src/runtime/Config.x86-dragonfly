@@ -15,5 +15,6 @@ include Config.x86-bsd
 
 ASSEM_SRC += ldso-stubs.S
 LINKFLAGS += -dynamic -export-dynamic
+OS_LIBS   += -lutil
 
 CFLAGS += -fno-omit-frame-pointer

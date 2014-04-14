@@ -15,6 +15,7 @@ include Config.x86-64-bsd
 
 ASSEM_SRC += ldso-stubs.S
 LINKFLAGS += -dynamic -export-dynamic
+OS_LIBS   += -lutil
 
 # Use 1:1 threading.
 # FIXME: DragonFly's lpthread must be what we need.
