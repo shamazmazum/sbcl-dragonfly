@@ -38,7 +38,7 @@
 
 #-(or win32 darwin)                    ;not yet
 (test)
-#-(or win32 darwin freebsd)            ;not yet
+#-(or win32 darwin)            ;not yet
 (consing-test)
 
 ;; For debugging purposes, print output for visual inspection to see if
