@@ -503,8 +503,8 @@ static struct thread *create_thread_struct(lispobj);
 void
 attach_os_thread(init_thread_data *scribble)
 {
-    os_thread_t os = pthread_self();
-    odxprint(misc, "attach_os_thread: attaching to %p", os);
+    struct thread *cur_th = arch_os_get_current_thread();
+    odxprint(misc, "attach_os_thread: attaching to %p", cur_th);
 
     struct thread *th = create_thread_struct(NIL);
     block_deferrable_signals(0, &scribble->oldset);
@@ -517,14 +517,8 @@ attach_os_thread(init_thread_data *scribble)
 #ifndef LISP_FEATURE_WIN32
     /* On windows, arch_os_thread_init will take care of finding the
      * stack. */
-    pthread_attr_t attr;
-    int pthread_getattr_np(pthread_t, pthread_attr_t *);
-    pthread_getattr_np(os, &attr);
-    void *stack_addr;
-    size_t stack_size;
-    pthread_attr_getstack(&attr, &stack_addr, &stack_size);
-    th->control_stack_start = stack_addr;
-    th->control_stack_end = (void *) (((uintptr_t) stack_addr) + stack_size);
+    th->control_stack_start = cur_th->control_stack_start;
+    th->control_stack_end = cur_th->control_stack_end;
 #endif
 
     init_new_thread(th, scribble, 0);
@@ -541,7 +535,7 @@ attach_os_thread(init_thread_data *scribble)
     uword_t stacksize
         = (uword_t) th->control_stack_end - (uword_t) th->control_stack_start;
     odxprint(misc, "attach_os_thread: attached %p as %p (0x%lx bytes stack)",
-             os, th, (long) stacksize);
+             cur_th, th, (long) stacksize);
 }
 
 void
