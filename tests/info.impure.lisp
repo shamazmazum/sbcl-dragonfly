@@ -136,11 +136,11 @@
 (test-util:with-test (:name :globaldb-info-iterate)
   (show-info '*))
 
-(test-util:with-test (:name :find-fdefinition-agreement)
-  ;; Shows that GET-INFO-VALUE agrees with FIND-FDEFINITION on all symbols,
+(test-util:with-test (:name :find-fdefn-agreement)
+  ;; Shows that GET-INFO-VALUE agrees with FIND-FDEFN on all symbols,
   ;; since they use diffent code. Something would have crashed long before here...
   (flet ((try (x)
-           (assert (eq (find-fdefinition x) (info :function :definition x)))))
+           (assert (eq (find-fdefn x) (info :function :definition x)))))
     (do-all-symbols (s)
       (try s)
       (try `(setf ,s))
@@ -448,7 +448,7 @@
   (let ((result (make-array (length names) :initial-element nil)))
     (dotimes (iter 3)
       (loop for i below (length names)
-            do (pushnew (find-fdefinition (aref names i)) (aref result i))))
+            do (pushnew (find-fdefn (aref names i)) (aref result i))))
     ;; The thread shall observe either nil or an fdefn, and at most one fdefn.
     (loop for list across result
           for i from 0
@@ -464,7 +464,8 @@
         (random-result (make-array (length names) :initial-element nil))
         (n-created 0)
         (highest-type-num
-         (position-if #'identity sb-c::*info-types* :from-end t)))
+         (position-if #'identity sb-c::*info-types*
+                      :end sb-c::+fdefn-type-num+ :from-end t)))
     (loop for name across names
           for i from 0
           do (setf (aref fdefn-result i)
@@ -475,7 +476,7 @@
                ;; Set random info for other names to cause CAS failures.
                ;; Pick an info-type number and give it a random value.
                ;; Store the random value so that we can assert on it later.
-               ;; Never touch reserved type numbers 0 or 1.
+               ;; Never touch reserved type numbers 0 or 63.
                (let ((random-name-index (random (length names)))
                      (random-type (+ (random (1- highest-type-num)) 2))
                      (random-value (random most-positive-fixnum)))

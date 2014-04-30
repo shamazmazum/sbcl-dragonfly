@@ -730,13 +730,36 @@
           ;; FIXME: #!+long-float (t ,(error "LONG-FLOAT case needed"))
           ((csubtypep tspec (specifier-type 'float))
            `(the ,tval (%single-float x)))
+          ((csubtypep tspec (specifier-type 'complex))
+           (multiple-value-bind (part-type result-type)
+               (cond ((and (numeric-type-p tspec)
+                           (numeric-type-format tspec))) ; specific FLOAT type
+                     ((csubtypep tspec (specifier-type '(complex float)))
+                      ;; unspecific FLOAT type
+                      'float)
+                     ((csubtypep tspec (specifier-type '(complex rational)))
+                      (values 'rational `(or ,tval rational)))
+                     (t
+                      (values t `(or ,tval rational))))
+             (let ((result-type (or result-type tval)))
+               `(cond
+                  ((not (typep x 'complex))
+                   (the ,result-type (complex (coerce x ',part-type))))
+                  ((typep x ',tval)
+                   x)
+                  (t     ; X is COMPLEX, but not of the requested type
+                   (the ,result-type
+                        (complex (coerce (realpart x) ',part-type)
+                                 (coerce (imagpart x) ',part-type))))))))
            ;; Special case STRING and SIMPLE-STRING as they are union types
            ;; in SBCL.
-           ((member tval '(string simple-string))
-            `(the ,tval
-               (if (typep x ',tval)
-                   x
-                   (replace (make-array (length x) :element-type 'character) x))))
+          ((member tval '(string simple-string))
+           `(the ,tval
+                 (if (typep x ',tval)
+                     x
+                     (replace (make-array (length x) :element-type 'character) x))))
+          ((eq tval 'character)
+           `(character x))
            ;; Special case VECTOR
            ((eq tval 'vector)
             `(the ,tval
@@ -770,6 +793,12 @@
                 (give-up-ir1-transform
                  "~@<~S specifies dimensions other than (*) in safe code.~:@>"
                  tval)))
+           ((type= tspec (specifier-type 'list))
+            `(coerce-to-list x))
+           ((csubtypep tspec (specifier-type 'function))
+            (if (csubtypep (lvar-type x) (specifier-type 'symbol))
+                `(coerce-symbol-to-fun x)
+                `(coerce-to-fun x)))
            (t
             (give-up-ir1-transform
              "~@<open coding coercion to ~S not implemented.~:@>"

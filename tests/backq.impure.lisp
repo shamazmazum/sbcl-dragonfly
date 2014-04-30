@@ -65,9 +65,7 @@
 (let ((s '``(,,@(list 1 2 3) 10)))
   (assert (equal (eval (eval s)) '(1 2 3 10))))
 
-(with-test (:name :comma-at-number-error)
+(with-test (:name :sharp-dot-resets-backquote-depth)
   (assert (eq :error
-              (handler-case
-                  (read-from-string "`(,@1)")
-                (reader-error ()
-                  :error)))))
+              (handler-case (read-from-string "`(foo bar #.(max 5 ,*print-base*))")
+                (reader-error () :error)))))
