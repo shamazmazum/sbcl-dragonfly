@@ -53,6 +53,7 @@
       (error "Unknown box reader syntax"))
     (make-instance 'box :value (first objects))))
 (set-macro-character #\[ 'read-box)
+(assert (eq (get-macro-character #\[) 'read-box)) ; not #'READ-BOX
 (set-syntax-from-char #\] #\))
 (multiple-value-bind (res pos)
     (read-from-string "#1=[#1#]")
@@ -131,7 +132,7 @@
               (handler-case
                   (with-input-from-string (s "42")
                     (read s t nil t))
-                (reader-error (e)
+                (reader-error ()
                   :error)))))
 
 (with-test (:name :standard-readtable-modified)
@@ -141,6 +142,7 @@
                      (handler-case
                          (progn ,form t)
                        (sb-int:standard-readtable-modified-error (e)
+                         (declare (ignorable e))
                          ,@(when op
                             `((assert
                                (equal ,op (sb-kernel::standard-readtable-modified-operation e)))))
@@ -165,15 +167,38 @@
     (assert (equal "NO-SUCH-PKG" (test "no-such-pkg::foo")))
     (assert (eq (find-package :cl) (test "cl:no-such-sym")))))
 
-;;; THIS SHOULD BE LAST as it frobs the standard readtable
-(with-test (:name :set-macro-character-nil)
-  (handler-bind ((sb-int:standard-readtable-modified-error #'continue))
-    (let ((fun (lambda (&rest args) 'ok)))
-      ;; NIL means the standard readtable.
-      (assert (eq t (set-macro-character #\~ fun nil nil)))
-      (assert (eq fun (get-macro-character #\~ nil)))
-      (assert (eq t (set-dispatch-macro-character #\# #\~ fun nil)))
-      (assert (eq fun (get-dispatch-macro-character #\# #\~ nil))))))
+;; lp# 1012335 - also tested by 'READ-BOX above
+(handler-bind ((condition #'continue))
+    (defun nil (stream char) (declare (ignore stream char)) 'foo!))
+(with-test (:name :set-macro-char-lazy-coerce-to-fun)
+  (set-macro-character #\$ #'nil) ; #'NIL is a function
+  (assert (eq (read-from-string "$") 'foo!))
+
+  (make-dispatch-macro-character #\$)
+  (assert (set-dispatch-macro-character #\$ #\( 'read-metavar))
+  (assert (eq (get-dispatch-macro-character #\$ #\() 'read-metavar))
+  (assert (eq (handler-case (read-from-string "$(x)")
+                (undefined-function (c)
+                  (if (eq (cell-error-name c) 'read-metavar) :win)))
+              :win))
+  (defun read-metavar (stream subchar arg)
+    (declare (ignore subchar arg))
+    (list :metavar (read stream t nil t)))
+  (assert (equal (read-from-string "$(x)") '(:metavar x)))
+
+  (set-macro-character #\$ nil) ; 'NIL never designates a function
+  (assert (eq (read-from-string "$") '$))
+
+  ;; Do not accept extended-function-designators.
+  ;; (circumlocute to prevent a compile-time error)
+  (let ((designator (eval ''(setf no-no-no))))
+    (assert (eq (handler-case (set-macro-character #\$ designator)
+                  (type-error () :ok))
+                :ok))
+    (assert (eq (handler-case
+                    (set-dispatch-macro-character #\# #\$ designator)
+                  (type-error () :ok))
+                :ok))))
 
 (defun cl-user::esoteric-load-thing ()
   ;; This LOAD-AS-SOURCE will fail if PRINT1 reads as the keyword :PRIN1
@@ -191,5 +216,100 @@
          (read-from-string
           "(#+#.(cl:progn (cl-user::esoteric-load-thing) 'sbcl) hiyya hoho)")))
     (assert (equal value '(hiyya hoho)))))
+
+#+sb-unicode
+(with-test (:name :unicode-dispatch-macros)
+  (let ((*readtable* (copy-readtable)))
+    (make-dispatch-macro-character (code-char #x266F)) ; musical sharp
+    (set-dispatch-macro-character
+     (code-char #x266F) (code-char #x221E) ; #\Infinity
+     (lambda (stream char arg)
+       (declare (ignore stream char arg))
+       :infinity))
+    (let ((x (read-from-string
+              (map 'string #'code-char '(#x266F #x221E)))))
+      (assert (eq x :infinity))
+      (set-dispatch-macro-character (code-char #x266F) (code-char #x221E) nil)
+      (assert (zerop (hash-table-count
+                      (car (sb-impl::%dispatch-macro-char-table
+                            (get-macro-character (code-char #x266F)))))))))
+
+  (let ((*readtable* (copy-readtable)))
+    (make-dispatch-macro-character (code-char #xbeef))
+    (set-dispatch-macro-character (code-char #xbeef) (code-char #xf00d)
+                                  'beef-f00d)
+    (set-dispatch-macro-character (code-char #xbeef) (code-char #xd00d)
+                                  'beef-d00d)
+    (set-syntax-from-char (code-char #xfeed) (code-char #xbeef)
+                          *readtable* *readtable*)
+    (assert (eq (get-dispatch-macro-character (code-char #xfeed)
+                                              (code-char #xf00d))
+                'beef-f00d))
+    (set-dispatch-macro-character (code-char #xfeed) (code-char #xf00d)
+                                  'read-feed-food)
+    (assert (eq (get-dispatch-macro-character (code-char #xbeef)
+                                              (code-char #xf00d))
+                'beef-f00d))
+    (set-dispatch-macro-character (code-char #xbeef) #\W 'read-beef-w)
+    (assert (null (get-dispatch-macro-character (code-char #xfeed) #\W)))
+    (set-syntax-from-char (code-char #xbeef) #\a)
+    (set-syntax-from-char (code-char #xfeed) #\b)
+    (set-syntax-from-char (code-char 35) #\a) ; sharp is dead
+    (assert (null (sb-impl::dispatch-tables *readtable*))))
+
+  ;; Ensure the interface provided for named-readtables remains somewhat intact.
+  (let ((*readtable* (copy-readtable)))
+    (make-dispatch-macro-character #\@)
+    (set-dispatch-macro-character #\@ #\a 'read-at-a)
+    (set-dispatch-macro-character #\@ #\$ 'read-at-dollar)
+    (set-dispatch-macro-character #\@ #\* #'sb-impl::sharp-star)
+    ;; Enter exactly one character in the Unicode range because
+    ;; iteratation order is arbitrary and assert would be fragile.
+    ;; ASCII characters are naturally ordered by code.
+    (set-dispatch-macro-character #\@ (code-char #x2010) 'read-blah)
+    (let ((rt (copy-readtable *readtable*)))
+      ;; Don't want to assert about all the standard noise,
+      ;; and also don't want to kill the ability to write #\char
+      (set-syntax-from-char #\# #\a rt)
+      (assert (equal (sb-impl::dispatch-tables rt nil)
+                     `((#\@ (#\A . read-at-a)
+                            (#\* . ,#'sb-impl::sharp-star)
+                            (#\$ . read-at-dollar)
+                            (#\hyphen . read-blah))))))
+    ;; this removes one entry rather than entering NIL in the hashtable
+    (set-dispatch-macro-character #\@ (code-char #x2010) nil)
+    (let ((rt (copy-readtable *readtable*)))
+      (set-syntax-from-char #\# #\a rt)
+      (assert (equal (sb-impl::dispatch-tables rt nil)
+                     `((#\@ (#\A . read-at-a)
+                            (#\* . ,#'sb-impl::sharp-star)
+                            (#\$ . read-at-dollar))))))))
+
+(with-test (:name :copy-dispatching-macro)
+  (let ((*readtable* (copy-readtable)))
+    (set-macro-character #\$ (get-macro-character #\#) t)
+    (let ((foo (read-from-string "$(a b c)")))
+      (assert (equalp foo #(a b c))))
+    (set-dispatch-macro-character #\$ #\[
+      (lambda (stream char arg)
+        (declare (ignore char arg))
+        (append '(:start) (read-delimited-list #\] stream t) '(:end))))
+    (set-syntax-from-char #\] #\))
+    (let ((foo (read-from-string "$[a b c]")))
+      (assert (equal foo '(:start a b c :end))))
+    ;; dispatch tables get shared. This behavior is SBCL-specific.
+    (let ((foo (read-from-string "#[a b c]")))
+      (assert (equal foo '(:start a b c :end))))))
+
+;;; THIS SHOULD BE LAST as it frobs the standard readtable
+(with-test (:name :set-macro-character-nil)
+  (handler-bind ((sb-int:standard-readtable-modified-error #'continue))
+
+    (let ((fun (lambda (&rest args) (declare (ignore args)) 'ok)))
+      ;; NIL means the standard readtable.
+      (assert (eq t (set-macro-character #\~ fun nil nil)))
+      (assert (eq fun (get-macro-character #\~ nil)))
+      (assert (eq t (set-dispatch-macro-character #\# #\~ fun nil)))
+      (assert (eq fun (get-dispatch-macro-character #\# #\~ nil))))))
 
 ;;; success

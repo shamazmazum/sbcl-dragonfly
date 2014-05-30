@@ -35,17 +35,26 @@
              (:nconc
               (let ((temp (gensym))
                     (map-result (gensym)))
-                `(let ((,map-result (list nil)))
+                `(let ((,map-result
+                        (locally (declare (muffle-conditions compiler-note))
+                          (list nil))))
+                   (declare (truly-dynamic-extent ,map-result))
                    (do-anonymous ((,temp ,map-result) . ,(do-clauses))
                      (,endtest (cdr ,map-result))
                      (setq ,temp (last (nconc ,temp ,call)))))))
              (:list
               (let ((temp (gensym))
                     (map-result (gensym)))
-                `(let ((,map-result (list nil)))
+                `(let ((,map-result
+                        (locally (declare (muffle-conditions compiler-note))
+                          (list nil))))
+                   (declare (truly-dynamic-extent ,map-result))
                    (do-anonymous ((,temp ,map-result) . ,(do-clauses))
                      (,endtest (truly-the list (cdr ,map-result)))
-                     (rplacd ,temp (setq ,temp (list ,call)))))))
+                     ;; Accumulate using %RPLACD. RPLACD becomes (SETF CDR)
+                     ;; which becomes %RPLACD but relies on "defsetfs".
+                     ;; This is for effect, not value, so makes no difference.
+                     (%rplacd ,temp (setq ,temp (list ,call)))))))
              ((nil)
               `(let ((,n-first ,(first arglists)))
                  (do-anonymous ,(do-clauses)

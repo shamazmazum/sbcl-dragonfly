@@ -81,6 +81,12 @@ do
       --xc-host=)
         $optarg_ok && SBCL_XC_HOST=$optarg
         ;;
+      --host-location=)
+        $optarg_ok && SBCL_HOST_LOCATION=$optarg
+        ;;
+      --target-location=)
+        $optarg_ok && SBCL_TARGET_LOCATION=$optarg
+        ;;
       --dynamic-space-size=)
         $optarg_ok && SBCL_DYNAMIC_SPACE_SIZE=$optarg
 	;;
@@ -247,6 +253,12 @@ echo "DEVNULL=\"$DEVNULL\"; export DEVNULL" > output/build-config
 echo "GNUMAKE=\"$GNUMAKE\"; export GNUMAKE" >> output/build-config
 echo "SBCL_XC_HOST=\"$SBCL_XC_HOST\"; export SBCL_XC_HOST" >> output/build-config
 echo "legacy_xc_spec=\"$legacy_xc_spec\"; export legacy_xc_spec" >> output/build-config
+if [ -n "$SBCL_HOST_LOCATION" ]; then
+    echo "SBCL_HOST_LOCATION=\"$SBCL_HOST_LOCATION\"; export SBCL_HOST_LOCATION" >> output/build-config
+fi
+if [ -n "$SBCL_TARGET_LOCATION" ]; then
+    echo "SBCL_TARGET_LOCATION=\"$SBCL_TARGET_LOCATION\"; export SBCL_TARGET_LOCATION" >> output/build-config
+fi
 
 # And now, sorting out the per-target dependencies...
 
@@ -353,6 +365,7 @@ case `uname -m` in
     parisc) guessed_sbcl_arch=hppa ;;
     9000/800) guessed_sbcl_arch=hppa ;;
     mips*) guessed_sbcl_arch=mips ;;
+    arm*) guessed_sbcl_arch=arm ;;
     *)
         # If we're not building on a supported target architecture, we
         # we have no guess, but it's not an error yet, since maybe
@@ -408,7 +421,7 @@ echo //initializing $ltf
 echo ';;;; This is a machine-generated file.' > $ltf
 echo ';;;; Please do not edit it by hand.' >> $ltf
 echo ';;;; See make-config.sh.' >> $ltf
-echo "((lambda (features) (set-difference features (list$WITHOUT_FEATURES)))" >> $ltf
+echo "(lambda (features) (union (set-difference features (list$WITHOUT_FEATURES))" >> $ltf
 printf " (union (list$WITH_FEATURES) (list " >> $ltf
 
 printf ":%s" "$sbcl_arch" >> $ltf
@@ -440,7 +453,7 @@ case "$sbcl_os" in
         # If you add other platforms here, don't forget to edit
         # src/runtime/Config.foo-linux too.
         case "$sbcl_arch" in
-	    mips)
+	    mips | arm)
 		printf ' :largefile' >> $ltf
 		;;
             x86 | x86-64)
@@ -630,7 +643,7 @@ elif [ "$sbcl_arch" = "ppc" ]; then
     printf ' :gencgc :stack-allocatable-closures :stack-allocatable-vectors' >> $ltf
     printf ' :stack-allocatable-lists :stack-allocatable-fixed-objects' >> $ltf
     printf ' :linkage-table :raw-instance-init-vops :memory-barrier-vops' >> $ltf
-    printf ' :compare-and-swap-vops :multiply-high-vops' >> $ltf
+    printf ' :compare-and-swap-vops :multiply-high-vops :alien-callbacks' >> $ltf
     if [ "$sbcl_os" = "linux" ]; then
         # Use a C program to detect which kind of glibc we're building on,
         # to bandage across the break in source compatibility between
@@ -641,7 +654,7 @@ elif [ "$sbcl_arch" = "ppc" ]; then
 	tools-for-build/where-is-mcontext > src/runtime/ppc-linux-mcontext.h || (echo "error running where-is-mcontext"; exit 1)
     elif [ "$sbcl_os" = "darwin" ]; then
         # We provide a dlopen shim, so a little lie won't hurt
-	printf " :os-provides-dlopen :alien-callbacks" >> $ltf
+	printf ' :os-provides-dlopen' >> $ltf
         # The default stack ulimit under darwin is too small to run PURIFY.
         # Best we can do is complain and exit at this stage
 	if [ "`ulimit -s`" = "512" ]; then
@@ -678,6 +691,15 @@ elif [ "$sbcl_arch" = "hppa" ]; then
     printf ' :cheneygc' >> $ltf
     printf ' :stack-allocatable-vectors :stack-allocatable-fixed-objects' >> $ltf
     printf ' :stack-allocatable-lists' >> $ltf
+elif [ "$sbcl_arch" = "arm" ]; then
+    printf ' :cheneygc :linkage-table :alien-callbacks' >> $ltf
+    # As opposed to soft-float or FPA, we support VFP only (and
+    # possibly VFPv2 and higher only), but we'll leave the obvious
+    # hooks in for someone to add the support later.
+    printf ' :arm-vfp :arm-vfpv2' >> $ltf
+    printf ' :ash-right-vops :multiply-high-vops :symbol-info-vops' >> $ltf
+    printf ' :stack-allocatable-lists :stack-allocatable-fixed-objects' >> $ltf
+    printf ' :stack-allocatable-vectors :stack-allocatable-closures' >> $ltf
 else
     # Nothing need be done in this case, but sh syntax wants a placeholder.
     echo > /dev/null
@@ -694,7 +716,7 @@ export sbcl_os sbcl_arch
 sh tools-for-build/grovel-features.sh >> $ltf
 
 echo //finishing $ltf
-echo ')))' >> $ltf
+echo '))))' >> $ltf
 
 # FIXME: The version system should probably be redone along these lines:
 #
@@ -711,3 +733,9 @@ if [ `uname` = "SunOS" ] ; then
   PATH=/usr/xpg4/bin:$PATH
 fi
 echo '"'`hostname`-`id -un`-`date +%Y-%m-%d-%H-%M-%S`'"' > output/build-id.tmp
+
+if [ -n "$SBCL_HOST_LOCATION" ]; then
+    echo //setting up host configuration
+    rsync --delete-after -a output/ "$SBCL_HOST_LOCATION/output/"
+    rsync -a local-target-features.lisp-expr version.lisp-expr "$SBCL_HOST_LOCATION/"
+fi

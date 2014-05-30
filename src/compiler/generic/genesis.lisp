@@ -1558,7 +1558,7 @@ core and return a descriptor to it."
 
 (defun cold-fdefinition-object (cold-name &optional leave-fn-raw)
   (declare (type (or symbol descriptor) cold-name))
-  (/show0 "/cold-fdefinition-object")
+  (/noshow0 "/cold-fdefinition-object")
   (let ((warm-name (warm-fun-name cold-name)))
     (or (gethash warm-name *cold-fdefn-objects*)
         (let ((fdefn (allocate-boxed-object (or *cold-fdefn-gspace* *dynamic*)
@@ -1590,9 +1590,9 @@ core and return a descriptor to it."
                        (ecase type
                          (#.sb!vm:simple-fun-header-widetag
                           (/show0 "static-fset (simple-fun)")
-                          #!+sparc
+                          #!+(or sparc arm)
                           defn
-                          #!-sparc
+                          #!-(or sparc arm)
                           (make-random-descriptor
                            (+ (logandc2 (descriptor-bits defn)
                                         sb!vm:lowtag-mask)
@@ -1848,6 +1848,10 @@ core and return a descriptor to it."
                 (ldb (byte 8 0) value)
                 (bvref-8 gspace-bytes (1+ gspace-byte-offset))
                 (ldb (byte 8 8) value)))))
+      (:arm
+       (ecase kind
+         (:absolute
+          (setf (bvref-32 gspace-bytes gspace-byte-offset) value))))
       (:hppa
        (ecase kind
          (:load
@@ -2245,12 +2249,16 @@ core and return a descriptor to it."
                 (fop-keyword-small-symbol-save)
   (push-fop-table (cold-load-symbol (clone-arg) *keyword-package*)))
 
+(defvar *uninterned-symbol-table* (make-hash-table :test #'equal))
 (clone-cold-fop (fop-uninterned-symbol-save)
                 (fop-uninterned-small-symbol-save)
   (let* ((size (clone-arg))
          (name (make-string size)))
     (read-string-as-bytes *fasl-input-stream* name)
-    (let ((symbol-des (allocate-symbol name)))
+    (let ((symbol-des (gethash name *uninterned-symbol-table*)))
+      (unless symbol-des
+        (setf symbol-des (allocate-symbol name)
+              (gethash name *uninterned-symbol-table*) symbol-des))
       (push-fop-table symbol-des))))
 
 ;;;; cold fops for loading packages
@@ -2949,18 +2957,17 @@ core and return a descriptor to it."
     (terpri))
 
   ;; writing information about internal errors
-  (let ((internal-errors sb!c:*backend-internal-errors*))
-    (dotimes (i (length internal-errors))
-      (let ((current-error (aref internal-errors i)))
-        ;; FIXME: this UNLESS should go away (see also FIXME in
-        ;; interr.lisp) -- APD, 2002-03-05
-        (unless (eq nil (car current-error))
-          (format t "#define ~A ~D~%"
-                  (c-symbol-name (car current-error))
-                  i))))
-    (format t "#define INTERNAL_ERROR_NAMES \\~%~{~S~#[~:;, \\~%~]~}~%"
-            (map 'list #'cdr internal-errors)))
-  (terpri)
+  ;; Assembly code needs only the constants for UNDEFINED_[ALIEN_]FUN_ERROR
+  ;; but to avoid imparting that knowledge here, we'll expose all error
+  ;; number constants except for OBJECT-NOT-<x>-ERROR ones.
+  (loop for interr across sb!c:*backend-internal-errors*
+        for i from 0
+        when (stringp (car interr))
+        do (format t "#define ~A ~D~%" (c-symbol-name (cdr interr)) i))
+  ;; C code needs strings for describe_internal_error()
+  (format t "#define INTERNAL_ERROR_NAMES ~{\\~%~S~^, ~}~2%"
+          (map 'list 'sb!kernel::!c-stringify-internal-error
+               sb!c:*backend-internal-errors*))
 
   ;; I'm not really sure why this is in SB!C, since it seems
   ;; conceptually like something that belongs to SB!VM. In any case,

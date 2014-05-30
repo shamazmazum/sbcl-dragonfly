@@ -195,6 +195,8 @@
   (define-type-predicate simple-vector-p simple-vector)
   (define-type-predicate stringp string)
   (define-type-predicate %instancep instance)
+  (define-type-predicate simple-fun-p simple-fun)
+  (define-type-predicate closurep closure)
   (define-type-predicate funcallable-instance-p funcallable-instance)
   (define-type-predicate symbolp symbol)
   (define-type-predicate vectorp vector))
@@ -261,7 +263,7 @@
     (once-only ((n-object object))
       (ecase (numeric-type-complexp type)
         (:real
-         (if (and #!-(or x86 x86-64) ;; Not implemented elsewhere yet
+         (if (and #!-(or x86 x86-64 arm) ;; Not implemented elsewhere yet
                   nil
                   (eql (numeric-type-class type) 'integer)
                   (eql (numeric-type-low type) 0)
@@ -331,10 +333,14 @@
                                      (remove type-cons
                                              (remove mtype types)))
                         (member ,@(remove nil members))))))
-        (once-only ((n-obj object))
-          `(or ,@(mapcar (lambda (x)
-                           `(typep ,n-obj ',(type-specifier x)))
-                         types))))))
+        (multiple-value-bind (widetags more-types)
+            (sb!kernel::widetags-from-union-type types)
+          (once-only ((n-obj object))
+            `(or ,@(if widetags
+                       `((%other-pointer-subtype-p ,n-obj ',widetags)))
+                 ,@(mapcar (lambda (x)
+                             `(typep ,n-obj ',(type-specifier x)))
+                           more-types)))))))
 
 ;;; Do source transformation for TYPEP of a known intersection type.
 (defun source-transform-intersection-typep (object type)
@@ -472,6 +478,16 @@
 ;;; dimensions, then use that predicate and test for dimensions.
 ;;; Otherwise, just do %TYPEP.
 (defun source-transform-array-typep (obj type)
+  ;; Intercept (SIMPLE-ARRAY * (*)) because otherwise it tests
+  ;; (AND SIMPLE-ARRAY (NOT ARRAY-HEADER)) to weed out rank 0 and >1.
+  ;; By design the simple arrays of of rank 1 occupy a contiguous
+  ;; range of widetags, and unlike the arbitrary-widetags code for unions,
+  ;; this nonstandard predicate can be generically defined for all backends.
+  (if (and (not (array-type-complexp type))
+           (eq (array-type-element-type type) *wild-type*)
+           (equal (array-type-dimensions type) '(*)))
+      (return-from source-transform-array-typep
+        `(simple-rank-1-array-*-p ,obj)))
   (multiple-value-bind (pred stype) (find-supertype-predicate type)
     (if (and (array-type-p stype)
              ;; (If the element type hasn't been defined yet, it's

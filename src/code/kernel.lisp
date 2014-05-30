@@ -42,12 +42,12 @@
 ;;; element type), this is going to be faster.
 (declaim (inline %other-pointer-widetag))
 (defun %other-pointer-widetag (x)
-  (sap-ref-8 (int-sap (get-lisp-obj-address x))
-             #.(ecase sb!c:*backend-byte-order*
-                 (:little-endian
-                  (- sb!vm:other-pointer-lowtag))
-                 (:big-endian
-                  (- (1- sb!vm:n-word-bytes) sb!vm:other-pointer-lowtag)))))
+  (sb!sys:sap-ref-8 (int-sap (get-lisp-obj-address x))
+                    #.(ecase sb!c:*backend-byte-order*
+                        (:little-endian
+                         (- sb!vm:other-pointer-lowtag))
+                        (:big-endian
+                         (- (1- sb!vm:n-word-bytes) sb!vm:other-pointer-lowtag)))))
 
 ;;; Return a System-Area-Pointer pointing to the data for the vector
 ;;; X, which must be simple.
@@ -80,9 +80,8 @@
 
 ;;;; SIMPLE-FUN and accessors
 
-(declaim (inline simple-fun-p))
 (defun simple-fun-p (object)
-  (= sb!vm:simple-fun-header-widetag (widetag-of object)))
+  (simple-fun-p object))
 
 (deftype simple-fun ()
   '(satisfies simple-fun-p))
@@ -164,9 +163,8 @@
 
 ;;;; CLOSURE type and accessors
 
-(declaim (inline closurep))
 (defun closurep (object)
-  (= sb!vm:closure-header-widetag (widetag-of object)))
+  (closurep object))
 
 (deftype closure ()
   '(satisfies closurep))

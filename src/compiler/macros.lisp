@@ -40,10 +40,9 @@
 ;;; kind to associate with NAME.
 (defmacro def-ir1-translator (name (lambda-list start-var next-var result-var)
                               &body body)
-  (let ((fn-name (symbolicate "IR1-CONVERT-" name))
-        (guard-name (symbolicate name "-GUARD")))
+  (let ((fn-name (symbolicate "IR1-CONVERT-" name)))
     (with-unique-names (whole-var n-env)
-      (multiple-value-bind (body decls doc)
+      (multiple-value-bind (body decls #-sb-xc-host doc)
           (parse-defmacro lambda-list whole-var body name "special form"
                           :environment n-env
                           :error-fun 'compiler-error
@@ -63,16 +62,20 @@
            ;; the cross-compilation host Lisp, which owns the
            ;; SYMBOL-FUNCTION of its COMMON-LISP symbols. These guard
            ;; functions also provide the documentation for special forms.
-           (progn
-             (defun ,guard-name (&rest args)
-               ,@(when doc (list doc))
-               (declare (ignore args))
-               (error 'special-form-function :name ',name))
-             (let ((fun #',guard-name))
-               (setf (%simple-fun-arglist fun) ',lambda-list
-                     (%simple-fun-name fun) ',name
-                     (symbol-function ',name) fun)
-               (fmakunbound ',guard-name)))
+           ;; FIXME: should be disallowed after bootstrap. Package-lock
+           ;; prevents it, but the protection could be stronger than that.
+           ;; The lambda name has significance to COERCE-SYMBOL-TO-FUN.
+           (let ((fun (named-lambda (sb!impl::special-operator ,name)
+                          (&rest args)
+                        ,@(when doc (list doc))
+                        (declare (ignore args))
+                        (error 'special-form-function :name ',name)) ))
+             ;; Set up a macro lambda list to a function.
+             (setf (%simple-fun-arglist fun)
+                   ',(if (eq (first lambda-list) '&whole)
+                         (cddr lambda-list)
+                         lambda-list)
+                   (symbol-function ',name) fun))
            ;; FIXME: Evidently "there can only be one!" -- we overwrite any
            ;; other :IR1-CONVERT value. This deserves a warning, I think.
            (setf (info :function :ir1-convert ',name) #',fn-name)
@@ -169,10 +172,12 @@
            (eval-when (:compile-toplevel :load-toplevel :execute)
              (defparameter ,translations-name ',(alist)))
            (defmacro ,(symbolicate name "-ATTRIBUTES") (&rest attribute-names)
+             #!+sb-doc
              "Automagically generated boolean attribute creation function.
   See !DEF-BOOLEAN-ATTRIBUTE."
              (compute-attribute-mask attribute-names ,translations-name))
            (defmacro ,test-name (attributes &rest attribute-names)
+             #!+sb-doc
              "Automagically generated boolean attribute test function.
   See !DEF-BOOLEAN-ATTRIBUTE."
              `(logtest ,(compute-attribute-mask attribute-names
@@ -201,6 +206,7 @@
     (declare (ignore attribute-names))
     `(define-setf-expander ,test-name (place &rest attributes
                                              &environment env)
+       #!+sb-doc
        "Automagically generated boolean attribute setter. See
  !DEF-BOOLEAN-ATTRIBUTE."
        #-sb-xc-host (declare (type lexenv env))

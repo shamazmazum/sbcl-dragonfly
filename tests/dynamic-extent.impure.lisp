@@ -536,6 +536,11 @@
     (true dx)
     nil))
 
+;;; mapfoo should make the initial cons dx
+
+(defun mapcar-negate (x) (mapcar #'- x))
+(defun mapcan-reverse (x) (mapcan #'reverse x))
+
 ;;; handler-case and handler-bind should use DX internally
 
 (defun dx-handler-bind (x)
@@ -571,6 +576,8 @@
   (assert-no-consing (nested-dx-lists))
   (assert-consing (nested-dx-not-used *a-cons*))
   (assert-no-consing (nested-evil-dx-used *a-cons*))
+  (assert-no-consing (mapcar-negate nil))
+  (assert-no-consing (mapcan-reverse nil))
   (assert-no-consing (multiple-dx-uses)))
 
 (with-test (:name (:no-consing :dx-value-cell))
@@ -619,19 +626,7 @@
   (setf (gethash 5 *table*) 13)
   (gethash 5 *table*))
 
-;; This fails on threaded PPC because the hash-table implementation
-;; uses recursive system locks, which cons (see below for test
-;; (:no-consing :lock), which also fails on threaded PPC).
-;;
-;; -- That may have been the situation in 2010 when the above comment
-;; was written, but AFAICT now, hash tables use WITH-PINNED-OBJECTS,
-;; which conses on PPC and SPARC when GENCGC is enabled.  So neither is
-;; this actually about threading, nor about PPC.  Yet since we are
-;; failing most of this file on SPARC anyway (for some tests even on
-;; cheneygc), I won't bother to mark this particular test as failing.
-;; It would be nice if someone could go through this file and figure it
-;; all out... --DFL
-(with-test (:name (:no-consing :hash-tables) :fails-on '(and :ppc :sb-thread))
+(with-test (:name (:no-consing :hash-tables))
   (assert-no-consing (test-hash-table)))
 
 ;;; Both with-pinned-objects and without-gcing should not cons
@@ -657,7 +652,7 @@
   (sb-thread:with-mutex (*mutex*)
     (true *mutex*)))
 
-(with-test (:name (:no-consing :mutex) :fails-on :ppc :skipped-on '(not :sb-thread))
+(with-test (:name (:no-consing :mutex) :skipped-on '(not :sb-thread))
   (assert-no-consing (test-mutex)))
 
 
@@ -836,7 +831,7 @@
 (with-test (:name :length-and-words-packed-in-same-tn)
   (assert (= 1 (length-and-words-packed-in-same-tn -3))))
 
-(with-test (:name :handler-case-bogus-compiler-note :fails-on :ppc)
+(with-test (:name :handler-case-bogus-compiler-note)
   (handler-bind
       ((compiler-note (lambda (note)
                         (error "compiler issued note ~S during test" note))))
@@ -869,7 +864,7 @@
     v))
 (defun barvector (x y z)
   (make-array 3 :initial-contents (list x y z)))
-(with-test (:name :dx-compiler-notes :fails-on :ppc)
+(with-test (:name :dx-compiler-notes)
   (flet ((assert-notes (j lambda)
            (let ((n 0))
              (handler-bind ((compiler-note (lambda (c)
@@ -928,25 +923,25 @@
       (if sp
           (assert (= sp (sb-c::%primitive sb-c:current-stack-pointer)))
           (setf sp (sb-c::%primitive sb-c:current-stack-pointer))))))
-(with-test (:name :handler-case-eating-stack :fails-on :ppc)
+(with-test (:name :handler-case-eating-stack)
   (assert-no-consing (handler-case-eating-stack)))
 
 ;;; A nasty bug where RECHECK-DYNAMIC-EXTENT-LVARS thought something was going
 ;;; to be stack allocated when it was not, leading to a bogus %NIP-VALUES.
 ;;; Fixed by making RECHECK-DYNAMIC-EXTENT-LVARS deal properly with nested DX.
 (deftype vec ()
-  `(simple-array single-float (3)))
+  `(simple-array t (3)))
 (declaim (ftype (function (t t t) vec) vec))
 (declaim (inline vec))
 (defun vec (a b c)
-  (make-array 3 :element-type 'single-float :initial-contents (list a b c)))
+  (make-array 3 :initial-contents (list a b c)))
 (defun bad-boy (vec)
   (declare (type vec vec))
   (lambda (fun)
     (let ((vec (vec (aref vec 0) (aref vec 1) (aref vec 2))))
       (declare (dynamic-extent vec))
       (funcall fun vec))))
-(with-test (:name :recheck-nested-dx-bug :fails-on :ppc)
+(with-test (:name :recheck-nested-dx-bug)
   (assert (funcall (bad-boy (vec 1.0 2.0 3.3))
                    (lambda (vec) (equalp vec (vec 1.0 2.0 3.3)))))
   (flet ((foo (x) (declare (ignore x))))

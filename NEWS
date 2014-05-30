@@ -1,4 +1,24 @@
 ;;;; -*- coding: utf-8; fill-column: 78 -*-
+changes in sbcl-1.2.0 relative to sbcl-1.1.18:
+  * bug fix: read-time-eval backquote context mixup. (lp#1321047)
+  * enhancement: when SAVE-LISP-AND-DIE fails due multiple threads, the
+    report of the signaled conditions lists currently running threads.
+  * enhancement: ported to ARM linux.
+  * enhancement: sb-gmp contrib has been updated. (lp#1305266)
+  * enhancement: new contrib sb-mpfr by Stephan Frank.
+  * bug fix: MAKE-SEQUENCE works with sequence types defined via DEFTYPE
+    (lp#1315846, thanks to Mark Cox)
+  * bug fix: SET-[DISPATCH-]MACRO-CHARACTER should coerce a symbolic
+    function-designator to a function only as needed. (lp#1012335)
+  * bug fix: remove references to asdf-install from the manual.  (lp#1207544,
+    thanks to Thomas Hlavaty)
+  * bug fix: handle --without-xxx options to make.sh more carefully.
+    (lp#1246665, thanks to Richard M Kreuter)
+  * bug fix: prevent maybe-delete-exit from doing semantically broken things
+    with local exits. (lp#309099, lp#518099, lp#533930)
+  * bug fix: attempts to subclass BUILT-IN-CLASSes signal errors, as required
+    by AMOP.  (lp#861004)
+
 changes in sbcl-1.1.18 relative to sbcl-1.1.17:
   * optimization: COERCE is now more effecient for more cases when the type is
     known at compile-time.
@@ -24,7 +44,7 @@ changes in sbcl-1.1.17 relative to sbcl-1.1.16:
     (lp#1077996)
   * bug fix: MAKE-CONDITION reports names of missing condition classes
     properly (lp#1199223)
-  * bug fix: restore building with clang. (lp#1293643) 
+  * bug fix: restore building with clang. (lp#1293643)
   * bug fix: restore building on SPARC (broken since 1.1.15).
   * bug fix: improved FreeBSD support.
   * bug fix: PPC floating point conversion corrupted stack.

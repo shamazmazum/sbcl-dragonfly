@@ -101,9 +101,8 @@
              (field (find slot-name (alien-record-type-fields alien-type)
                           :key #'alien-record-field-name)))
         (unless field
-          (abort-ir1-transform "~S doesn't have a slot named ~S"
-                               alien
-                               slot-name))
+          (abort-ir1-transform "~S~% doesn't have a slot named ~S"
+                               type slot-name))
         (values (alien-record-field-offset field)
                 (alien-record-field-type field))))))
 
@@ -705,7 +704,15 @@
                   (lvar-value type)
                   (error "Something is broken.")))
         (lvar (node-lvar call))
-        (args args)
+        ;; KLUDGE: On ARM systems our register pressure is so high
+        ;; that if we process register args before stack args we end
+        ;; up with all of our non-descriptor regs either
+        ;; component-live (NFP) or wired (everything else) and can't
+        ;; actually process the stack args.  Processing the arguments
+        ;; in reverse order here doesn't change the semantics, but we
+        ;; deal with all of the stack arguments before the wired
+        ;; register arguments become live.
+        (args #!-arm args #!+arm (reverse args))
         #!+x86
         (stack-pointer (make-stack-pointer-tn)))
     (multiple-value-bind (nsp stack-frame-size arg-tns result-tns)
@@ -715,7 +722,9 @@
         (vop set-fpu-word-for-c call block)
         (vop current-stack-pointer call block stack-pointer))
       (vop alloc-number-stack-space call block stack-frame-size nsp)
-      (dolist (tn arg-tns)
+      ;; KLUDGE: This is where the second half of the ARM
+      ;; register-pressure change lives (see above).
+      (dolist (tn #!-arm arg-tns #!+arm (reverse arg-tns))
         ;; On PPC, TN might be a list. This is used to indicate
         ;; something special needs to happen. See below.
         ;;
@@ -724,8 +733,6 @@
                (arg (pop args))
                (sc (tn-sc first-tn))
                (scn (sc-number sc))
-               #!-(or x86 x86-64) (temp-tn (make-representation-tn
-                                            (tn-primitive-type first-tn) scn))
                (move-arg-vops (svref (sc-move-arg-vops sc) scn)))
           (aver arg)
           (unless (= (length move-arg-vops) 1)
@@ -736,17 +743,28 @@
                                                      (lvar-tn call block arg)
                                                      nsp
                                                      first-tn)
-          #!-(or x86 x86-64) (progn
-                               (emit-move call
-                                          block
-                                          (lvar-tn call block arg)
-                                          temp-tn)
-                               (emit-move-arg-template call
-                                                       block
-                                                       (first move-arg-vops)
-                                                       temp-tn
-                                                       nsp
-                                                       first-tn))
+          #!-(or x86 x86-64)
+          (cond
+            #!+arm-softfp
+            ((and (proper-list-of-length-p tn 3)
+                  (symbolp (third tn)))
+             (emit-template call block
+                            (template-or-lose (third tn))
+                            (reference-tn (lvar-tn call block arg) nil)
+                            (reference-tn-list (butlast tn) t)))
+            (t
+             (let ((temp-tn (make-representation-tn
+                             (tn-primitive-type first-tn) scn)))
+               (emit-move call
+                          block
+                          (lvar-tn call block arg)
+                          temp-tn)
+               (emit-move-arg-template call
+                                       block
+                                       (first move-arg-vops)
+                                       temp-tn
+                                       nsp
+                                       first-tn))))
           #!+(and ppc darwin)
           (when (listp tn)
             ;; This means that we have a float arg that we need to
@@ -763,7 +781,8 @@
       (aver (null args))
       (unless (listp result-tns)
         (setf result-tns (list result-tns)))
-      (let ((arg-tns (flatten-list arg-tns)))
+      (let ((arg-tns (remove-if-not #'tn-p (flatten-list arg-tns)))
+            (result-tns (remove-if-not #'tn-p result-tns)))
         (vop* call-out call block
               ((lvar-tn call block function)
                (reference-tn-list arg-tns nil))
@@ -774,4 +793,14 @@
       (progn
         (vop reset-stack-pointer call block stack-pointer)
         (vop set-fpu-word-for-lisp call block))
-      (move-lvar-result call block result-tns lvar))))
+      (cond
+        #!+arm-softfp
+        ((and lvar
+              (proper-list-of-length-p result-tns 3)
+              (symbolp (third result-tns)))
+         (emit-template call block
+                        (template-or-lose (third result-tns))
+                        (reference-tn-list (butlast result-tns) nil)
+                        (reference-tn (car (ir2-lvar-locs (lvar-info lvar))) t)))
+        (t
+         (move-lvar-result call block result-tns lvar))))))

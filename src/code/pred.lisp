@@ -76,6 +76,7 @@
                     (stem (string-left-trim "%" (string-right-trim "P-" name)))
                     (article (if (position (schar name 0) "AEIOU") "an" "a")))
                `(defun ,pred (object)
+                  #!+sb-doc
                   ,(format nil
                            "Return true if OBJECT is ~A ~A, and NIL otherwise."
                            article
@@ -148,16 +149,22 @@
     (saetp-defs))
   ;; Other array types
   (def-type-predicate-wrapper simple-array-p)
+  (def-type-predicate-wrapper simple-rank-1-array-*-p)
   (def-type-predicate-wrapper simple-string-p)
   (def-type-predicate-wrapper stringp)
   (def-type-predicate-wrapper vectorp)
   (def-type-predicate-wrapper vector-nil-p))
 
-#!+(or x86 x86-64)
+#!+(or x86 x86-64 arm)
 (defun fixnum-mod-p (x limit)
   (and (fixnump x)
        (<= 0 x limit)))
 
+#!+(or x86 x86-64 ppc)
+(defun %other-pointer-subtype-p (x choices)
+  (and (%other-pointer-p x)
+       (member (%other-pointer-widetag x) choices)
+       t))
 
 ;;; Return the specifier for the type of object. This is not simply
 ;;; (TYPE-SPECIFIER (CTYPE-OF OBJECT)) because CTYPE-OF has different

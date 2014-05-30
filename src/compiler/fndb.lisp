@@ -77,9 +77,9 @@
 (defknown (eq eql) (t t) boolean (movable foldable flushable commutative))
 (defknown (equal equalp) (t t) boolean (foldable flushable recursive))
 
-#!+(or x86 x86-64)
+#!+(or x86 x86-64 arm)
 (defknown fixnum-mod-p (t fixnum) boolean
-    (movable foldable flushable always-translatable))
+  (movable foldable flushable always-translatable))
 
 
 ;;;; classes
@@ -188,6 +188,8 @@
   sb!xc:package)
 (defknown find-package (package-designator) (or sb!xc:package null)
   (flushable))
+(defknown find-undeleted-package-or-lose (package-designator)
+  sb!xc:package) ; not flushable
 (defknown package-name (package-designator) (or simple-string null)
   (unsafely-flushable))
 (defknown package-nicknames (package-designator) list (unsafely-flushable))
@@ -373,8 +375,8 @@
   (movable foldable flushable explicit-check))
 #!+ash-right-vops
 (defknown %ash/right ((or word sb!vm:signed-word) (mod #.sb!vm:n-word-bits))
-    (or word sb!vm:signed-word)
-    (movable foldable flushable always-translatable))
+  (or word sb!vm:signed-word)
+  (movable foldable flushable always-translatable))
 (defknown (logcount integer-length) (integer) bit-index
   (movable foldable flushable explicit-check))
 ;;; FIXME: According to the ANSI spec, it's legal to use any
@@ -1531,6 +1533,7 @@
 (defknown %nip-values (t t &rest t) (values))
 (defknown %allocate-closures (t) *)
 (defknown %type-check-error (t t) nil)
+(defknown %type-check-error/c (t t) nil)
 
 ;; FIXME: This function does not return, but due to the implementation
 ;; of FILTER-LVAR we cannot write it here.

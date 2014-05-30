@@ -660,9 +660,9 @@
       (setf (dstate-labels dstate) labels))))
 
 ;;; Get the instruction-space, creating it if necessary.
-(defun get-inst-space ()
+(defun get-inst-space (&key force)
   (let ((ispace *disassem-inst-space*))
-    (when (null ispace)
+    (when (or force (null ispace))
       (let ((insts nil))
         (maphash (lambda (name inst-flavs)
                    (declare (ignore name))
@@ -1254,6 +1254,7 @@
         (sb!di:no-debug-blocks () nil)))))
 
 (defvar *disassemble-annotate* t
+  #!+sb-doc
   "Annotate DISASSEMBLE output with source code.")
 
 (defun add-debugging-hooks (segment debug-fun &optional sfcache)
@@ -1942,9 +1943,14 @@
                              storage-location))))
             dstate)
       t)))
+
+(defun maybe-note-static-symbol (offset dstate)
+  (dolist (symbol sb!vm:*static-symbols*)
+    (when (= (sb!kernel:get-lisp-obj-address symbol) offset)
+      (return (note (lambda (s) (prin1 symbol s)) dstate)))))
 
 (defun get-internal-error-name (errnum)
-  (car (svref sb!c:*backend-internal-errors* errnum)))
+  (cdr (svref sb!c:*backend-internal-errors* errnum)))
 
 (defun get-sc-name (sc-offs)
   (sb!c:location-print-name

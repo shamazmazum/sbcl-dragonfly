@@ -954,7 +954,10 @@
                              (sap-int (sb!vm:context-pc scp))
                              code
                              (%code-entry-points code)
+                             #!-arm
                              (sb!vm:context-register scp sb!vm::lra-offset)
+                             #!+arm
+                             (stack-ref frame-pointer lra-save-offset)
                              computed-return))
                       ;; We failed to pinpoint where PC is, but set
                       ;; pc-offset to 0 to keep the backtrace from
@@ -2026,7 +2029,7 @@ register."
        (= val (+ (- (foreign-symbol-address "undefined_tramp")
                     (* sb!vm:n-word-bytes sb!vm:simple-fun-code-offset))
                  sb!vm:fun-pointer-lowtag))
-       #!+sparc
+       #!+(or sparc arm)
        (= val (foreign-symbol-address "undefined_tramp"))
        ;; pointer
        (not (zerop (valid-lisp-pointer-p (int-sap val)))))

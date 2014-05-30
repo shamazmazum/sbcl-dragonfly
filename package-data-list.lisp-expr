@@ -501,7 +501,9 @@ like *STACK-TOP-HINT* and unsupported stuff like *TRACED-FUN-LIST*."
                "MAYBE-NOTE-ASSOCIATED-STORAGE-REF"
                "MAYBE-NOTE-NIL-INDEXED-OBJECT"
                "MAYBE-NOTE-NIL-INDEXED-SYMBOL-SLOT-REF"
-               "MAYBE-NOTE-SINGLE-STORAGE-REF" "NOTE"
+               "MAYBE-NOTE-SINGLE-STORAGE-REF"
+               "MAYBE-NOTE-STATIC-SYMBOL"
+               "NOTE"
                "NOTE-CODE-CONSTANT" "PARAMS" "PRIN1-QUOTED-SHORT"
                "PRIN1-SHORT" "PRINT-BYTES"
                "PRINT-CURRENT-ADDRESS" "PRINT-INST"
@@ -1292,6 +1294,9 @@ possibly temporarily, because it might be used internally."
    ;;   * Pull all the OBJECT-NOT-FOO symbols out. Maybe we could even
    ;;     figure out a way to stop exporting them? Failing that,
    ;;     they could be in SB-INTERR.
+   ;;     Or better still, since error names are basically meaningless except
+   ;;     for the ~18 errors that are _not_ object-not-<x>, stop naming them.
+   ;;     C just needs a map from number -> string-to-show.
    #s(sb-cold:package-data
       :name "SB!KERNEL"
       :doc
@@ -1629,7 +1634,7 @@ is a good idea, but see SB-SYS re. blurring of boundaries."
                ;; uses in the second sense as "hairy" instead?
                "OBJECT-NOT-COMPLEX-VECTOR-ERROR" "OBJECT-NOT-CONS-ERROR"
                "OBJECT-NOT-DOUBLE-FLOAT-ERROR" "OBJECT-NOT-FIXNUM-ERROR"
-               "OBJECT-NOT-FLOAT-ERROR" "OBJECT-NOT-FUN-ERROR"
+               "OBJECT-NOT-FLOAT-ERROR" "OBJECT-NOT-FUNCTION-ERROR"
                "OBJECT-NOT-INSTANCE-ERROR" "OBJECT-NOT-INTEGER-ERROR"
                "OBJECT-NOT-LIST-ERROR"
                #!+long-float "OBJECT-NOT-LONG-FLOAT-ERROR"
@@ -1719,6 +1724,7 @@ is a good idea, but see SB-SYS re. blurring of boundaries."
                "SHIFT-TOWARDS-START" "SHRINK-VECTOR" "%SHRINK-VECTOR"
                ;; FIXME: 32/64-bit issues
                "SIGNED-BYTE-32-P" "SIGNED-BYTE-64-P"
+               "SIMPLE-RANK-1-ARRAY-*-P"
                "SIMPLE-ARRAY-COMPLEX-DOUBLE-FLOAT-P"
                #!+long-float "SIMPLE-ARRAY-COMPLEX-LONG-FLOAT-P"
                "SIMPLE-ARRAY-COMPLEX-SINGLE-FLOAT-P"
@@ -1902,6 +1908,7 @@ is a good idea, but see SB-SYS re. blurring of boundaries."
                "DSD-DEFAULT" "LAYOUT-INHERITS" "DD-LENGTH"
                "%CODE-ENTRY-POINTS" "%DENOMINATOR"
                "%OTHER-POINTER-P"
+               "%OTHER-POINTER-SUBTYPE-P"
 
                "STANDARD-CLASSOID" "CLASSOID-OF"
                "MAKE-STANDARD-CLASSOID"
@@ -2294,7 +2301,8 @@ guaranteed to be present in later versions of SBCL.  Use of this
 package is deprecated in favour of SB-MOP."
       :use ("CL" "SB!MOP" "SB!INT" "SB!EXT" "SB!WALKER" "SB!KERNEL")
       ;; experimental SBCL-only (for now) symbols
-      :export ("MAKE-METHOD-SPECIALIZERS-FORM"
+      :export ("SYSTEM-CLASS"
+               "MAKE-METHOD-SPECIALIZERS-FORM"
                "PARSE-SPECIALIZER-USING-CLASS"
                "UNPARSE-SPECIALIZER-USING-CLASS"
                "+SLOT-UNBOUND+")

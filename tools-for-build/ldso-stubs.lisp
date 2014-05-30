@@ -63,6 +63,16 @@ ldso_stub__~A: ;                                \\
 #endif
 #include \"sbcl.h\""
 
+#!+arm "
+#define LDSO_STUBIFY(fct)               \\
+  .align                              ; \\
+  .global ldso_stub__ ## fct          ; \\
+  .type ldso_stub__ ## fct, %function ; \\
+ldso_stub__ ## fct:                   ; \\
+  ldr r8, =fct                        ; \\
+  bx r8                               ; \\
+  .size ldso_stub__ ## fct, .-ldso_stub__ ## fct"
+
 #!+sparc "
 #ifdef LISP_FEATURE_SPARC
 #include \"sparc-funcdef.h\"
