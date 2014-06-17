@@ -232,6 +232,8 @@ call_into_c:
 	@@ here because we have to be able to pass the function
 	@@ pointer in a boxed register, but the linkage-table is quite
         @@ capable of doing a tail-call to a Thumb routine.
+        @@
+        @@ R8 is important for undefined_alien_function.
         blx      reg_R8
 
         @@ We're back.  Our main tasks are to move the C return value
@@ -332,7 +334,33 @@ call_into_c:
         @@ offset of 7, not the 3 that we use for LEXENV.
         .byte   sc_DescriptorReg + (0x40 * 3)
 .error_args_end:
+
+        .align	3
+	.global	undefined_alien_function
+	.type	undefined_alien_function, %object
+	.word	SIMPLE_FUN_HEADER_WIDETAG
+	.equ	undefined_alien_function, .+1
+	.word	undefined_alien_function
+	.word	NIL
+	.word	NIL
+	.word	NIL
+	.word	NIL
+	.word	NIL
+undefined_alien_function:
+        ldr     reg_CODE, = undefined_alien_function
 
+        @@ The magic (undefined) "BREAK_POINT" instruction.
+        .word 0xe7f001f0
+
+        @@ Error arguments for an undefined function.
+        .byte   trap_Error
+        .byte   4
+        .byte   UNDEFINED_ALIEN_FUN_ERROR
+        @@ Encode unsigned R8, which comes from call_into_c
+        .byte   0xFE
+        .byte   0x11
+        .byte   0x02
+
 	.align	3
 	.global	closure_tramp
 	.type	closure_tramp, %object
@@ -379,4 +407,70 @@ fun_end_breakpoint_trap:
         .global fun_end_breakpoint_end
 fun_end_breakpoint_end:
 
-	/* EOF */
+#ifdef LISP_FEATURE_GENCGC
+	.align
+	.global	alloc_tramp
+	.type	alloc_tramp, %function
+alloc_tramp:
+        stmfd	sp!, {r4, r6, r12, lr}
+
+        ldr     r4, =foreign_function_call_active
+        str     pc, [r4]
+
+        ldr     r4, STATIC_SYMBOL_VALUE(CONTROL_STACK_POINTER)
+        add     r6, r4, #8*4
+        str     r6, STATIC_SYMBOL_VALUE(CONTROL_STACK_POINTER)
+
+        @@ Create a new frame and save descriptor regs on the stack
+	@@ for the GC to see.
+        str     reg_CFP, [r4, #0]
+        str     reg_NULL, [r4, #4]
+        str     reg_CODE, [r4, #8]
+        add     r4, r4, #3*4
+        stmea   r4, {r0-reg_LEXENV, r8}
+
+        ldr     r0,  [sp, #4*4]
+        fstmfdd sp!, {d0-d7}
+
+        mov     lr, pc
+        ldr     pc,=alloc
+
+        fldmfdd sp!, {d0-d7}
+        str     r0,  [sp, #4*4]
+        ldr     r4, STATIC_SYMBOL_VALUE(CONTROL_STACK_POINTER)
+        ldmea   r4, {r0-reg_LEXENV, r8}
+        sub     r4, r4, #8*4
+        str     r4, STATIC_SYMBOL_VALUE(CONTROL_STACK_POINTER)
+
+        ldr     r4, =foreign_function_call_active
+        mov     r6, #0
+	str     r6, [r4]
+
+	ldmfd	sp!, {r4, r6, r12, lr}
+	bx	lr
+
+        .align
+	.global	fpu_save
+	.type	fpu_save, %function
+fpu_save:
+        fstmiad r0, {d0-d7}
+	bx	lr
+
+        .align
+	.global	fpu_restore
+	.type	fpu_restore, %function
+fpu_restore:
+        add     r0, r0, #16
+        fldmiad r0, {d0-d7}
+	bx	lr
+
+        .align
+	.global	do_pending_interrupt
+	.type	do_pending_interrupt, %function
+do_pending_interrupt:
+        stmfd	sp!, {reg_OCFP, lr}
+        ldr     reg_OCFP, =0xf0001
+        swi     #0
+        ldmfd	sp!, {reg_OCFP, lr}
+	bx	lr
+#endif

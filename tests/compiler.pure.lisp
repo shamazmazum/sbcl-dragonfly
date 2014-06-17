@@ -430,12 +430,11 @@
 ;;; Moellmann: CONVERT-MORE-CALL failed on the following call
 (assert (eq (eval '((lambda (&key) 'u) :allow-other-keys nil)) 'u))
 
-(assert
- (raises-error? (multiple-value-bind (a b c)
-                    (eval '(truncate 3 4))
-                  (declare (integer c))
-                  (list a b c))
-                type-error))
+(assert-error (multiple-value-bind (a b c)
+                  (eval '(truncate 3 4))
+                (declare (integer c))
+                (list a b c))
+              type-error)
 
 (assert (equal (multiple-value-list (the (values &rest integer)
                                       (eval '(values 3))))
@@ -485,10 +484,10 @@
               2 (compile nil '(lambda ()
                                (make-array nil :initial-element 11))))))
 
-(assert (raises-error? (funcall (eval #'open) "assertoid.lisp"
-                                :external-format '#:nonsense)))
-(assert (raises-error? (funcall (eval #'load) "assertoid.lisp"
-                                :external-format '#:nonsense)))
+(assert-error (funcall (eval #'open) "assertoid.lisp"
+                       :external-format '#:nonsense))
+(assert-error (funcall (eval #'load) "assertoid.lisp"
+                       :external-format '#:nonsense))
 
 (assert (= (the (values integer symbol) (values 1 'foo 13)) 1))
 
@@ -496,8 +495,8 @@
                   '(lambda (v)
                     (declare (optimize (safety 3)))
                     (list (the fixnum (the (real 0) (eval v))))))))
-  (assert (raises-error? (funcall f 0.1) type-error))
-  (assert (raises-error? (funcall f -1) type-error)))
+  (assert-error (funcall f 0.1) type-error)
+  (assert-error (funcall f -1) type-error))
 
 ;;; the implicit block does not enclose lambda list
 (let ((forms '((defmacro #1=#:foo (&optional (x (return-from #1#))))
@@ -514,10 +513,10 @@
                                 (svref (make-array '(8 9) :adjustable t) 1)))))
 
 ;;; CHAR= did not check types of its arguments (reported by Adam Warner)
-(raises-error? (funcall (compile nil '(lambda (x y z) (char= x y z)))
+(assert-error (funcall (compile nil '(lambda (x y z) (char= x y z)))
                         #\a #\b nil)
                type-error)
-(raises-error? (funcall (compile nil
+(assert-error (funcall (compile nil
                                  '(lambda (x y z)
                                    (declare (optimize (speed 3) (safety 3)))
                                    (char/= x y z)))
@@ -702,6 +701,54 @@
                 (LET ((V7 (%F1)))
                   (+ 359749 35728422))))
             -24076)))
+
+(with-test (:name :ansi-misc.293a)
+  (assert (= (funcall
+              (compile
+               nil
+               '(lambda (a b c)
+                 (declare (optimize (speed 2) (space 3) (safety 1)
+                           (debug 2) (compilation-speed 2)))
+                 (block b6
+                   (multiple-value-prog1
+                       0 b 0
+                       (catch 'ct7
+                         (return-from b6
+                           (catch 'ct2
+                             (complex (cl::handler-bind nil -254932942) 0))))))))
+              1 2 3)
+             -254932942)))
+
+(with-test (:name :ansi-misc.293d)
+  (assert (= (funcall
+              (compile
+               nil
+               '(lambda ()
+                 (declare (optimize (debug 3) (safety 0) (space 2)
+                           (compilation-speed 2) (speed 2)))
+                 (block b4
+                   (multiple-value-prog1
+                       0
+                     (catch 'ct8
+                       (return-from b4 (catch 'ct2 (progn (tagbody) 0)))))))))
+             0)))
+
+(with-test (:name :ansi-misc.618)
+  (assert (= (funcall
+              (compile
+               nil
+               '(lambda (c)
+                 (declare (optimize (space 0) (compilation-speed 2) (debug 0)
+                           (speed 3) (safety 0)))
+                 (block b1
+                   (ignore-errors
+                    (multiple-value-prog1 0
+                      (apply (constantly 0)
+                             c
+                             (catch 'ct2 (return-from b1 0))
+                             nil))))))
+              -4951)
+             0)))
 
 ;;; bug 294 reported by Paul Dietz: miscompilation of REM and MOD
 (assert (= (funcall (compile nil `(lambda (b)
@@ -1773,13 +1820,15 @@
 
 ;;; bug #351 -- program-error for malformed LET and LET*, including those
 ;;; resulting from SETF of LET.
-(dolist (fun (list (compile nil '(lambda () (let :bogus-let :oops)))
-                   (compile nil '(lambda () (let* :bogus-let* :oops)))
-                   (compile nil '(lambda (x) (push x (let ((y 0)) y))))))
-  (assert (functionp fun))
-  (multiple-value-bind (res err) (ignore-errors (funcall fun))
-    (assert (not res))
-    (assert (typep err 'program-error))))
+(with-test (:name :bug-351)
+  (dolist (fun (list (compile nil '(lambda (x) (let :bogus-let :oops)))
+                     (compile nil '(lambda (x) (let* :bogus-let* :oops)))
+                     (compile nil '(lambda (x) (push x (let ((y 0)) y))))))
+    (assert (functionp fun))
+    (multiple-value-bind (res err) (ignore-errors (funcall fun t))
+      (princ err) (terpri)
+      (assert (not res))
+      (assert (typep err 'program-error)))))
 
 (let ((fun (compile nil '(lambda (x) (random (if x 10 20))))))
   (dotimes (i 100 (error "bad RANDOM distribution"))
@@ -1918,17 +1967,12 @@
 ;;; crash in the ASH vop (since a shift of 57 wouldn't fit in the
 ;;; machine's ASH instruction's immediate field) that the compiler
 ;;; thought was legitimate.
-;;;
-;;; FIXME: this has been recorded as bug 383.  The attempted fix (sbcl
-;;; 0.9.2.6) led to lots of spurious optimization notes.  So the bug stil
-;;; exist and this test case serves as a reminder of the problem.
-;;;   --njf, 2005-07-05
-#+nil
-(compile 'nil
-         (LAMBDA (B)
-           (DECLARE (TYPE (INTEGER -2 14) B))
-           (DECLARE (IGNORABLE B))
-           (ASH (IMAGPART B) 57)))
+(with-test (:name :overlarge-immediate-in-ash-vop)
+  (compile 'nil
+           (LAMBDA (B)
+             (DECLARE (TYPE (INTEGER -2 14) B))
+             (DECLARE (IGNORABLE B))
+             (ASH (IMAGPART B) 57))))
 
 ;;; bug reported by Eduardo Mu\~noz
 (multiple-value-bind (fun warnings failure)
@@ -2250,9 +2294,9 @@
                 (declare (type (and standard-object function) x))
                 x))
        (fun2 (compile nil form2)))
-  (assert (raises-error? (funcall fun1 (make-condition 'error))))
-  (assert (raises-error? (funcall fun1 fun1)))
-  (assert (raises-error? (funcall fun2 fun2)))
+  (assert-error (funcall fun1 (make-condition 'error)))
+  (assert-error (funcall fun1 fun1))
+  (assert-error (funcall fun2 fun2))
   (assert (eq (funcall fun2 #'print-object) #'print-object)))
 
 ;;; LET* + VALUES declaration: while the declaration is a non-standard
@@ -3578,7 +3622,7 @@
                                1))))
 
 (with-test (:name :dotimes-non-integer-counter-value)
-  (assert (raises-error? (dotimes (i 8.6)) type-error)))
+  (assert-error (dotimes (i 8.6)) type-error))
 
 (with-test (:name :bug-454681)
   ;; This used to break due to reference to a dead lambda-var during
@@ -3942,12 +3986,12 @@
                     (member x ',cycle)))))
 
 (with-test (:name :bug-722734)
-  (assert (raises-error?
-            (funcall (compile
-                      nil
-                      '(lambda ()
-                        (eql (make-array 6)
-                         (list unbound-variable-1 unbound-variable-2))))))))
+  (assert-error
+   (funcall (compile
+             nil
+             '(lambda ()
+               (eql (make-array 6)
+                (list unbound-variable-1 unbound-variable-2)))))))
 
 (with-test (:name :bug-771673)
   (assert (equal `(the foo bar) (macroexpand `(truly-the foo bar))))
@@ -4309,21 +4353,21 @@
     (assert (every #'plusp (funcall f #'list)))))
 
 (with-test (:name (:malformed-ignore :lp-1000239))
-  (raises-error?
+  (assert-error
    (eval '(lambda () (declare (ignore (function . a)))))
-   sb-int:compiled-program-error)
-  (raises-error?
+   sb-int:simple-program-error)
+  (assert-error
    (eval '(lambda () (declare (ignore (function a b)))))
-   sb-int:compiled-program-error)
-  (raises-error?
+   sb-int:simple-program-error)
+  (assert-error
    (eval '(lambda () (declare (ignore (function)))))
-   sb-int:compiled-program-error)
-  (raises-error?
+   sb-int:simple-program-error)
+  (assert-error
    (eval '(lambda () (declare (ignore (a)))))
-   sb-int:compiled-program-error)
-  (raises-error?
+   sb-int:simple-program-error)
+  (assert-error
    (eval '(lambda () (declare (ignorable (a b)))))
-   sb-int:compiled-program-error))
+   sb-int:simple-program-error))
 
 (with-test (:name :malformed-type-declaraions)
   (compile nil '(lambda (a) (declare (type (integer 1 2 . 3) a)))))
@@ -4999,15 +5043,7 @@
                        (array-dimension a 2)))))))
     (assert noted)))
 
-(with-test (:name :upgraded-array-element-type-undefined-type)
-  (raises-error? (upgraded-array-element-type 'an-undefined-type))
-  (raises-error? (upgraded-array-element-type '(and fixnum an-undefined-type)))
-  (compile nil '(lambda ()
-                 (make-array 10
-                  :element-type '(or null an-undefined-type))))
-  (compile nil '(lambda ()
-                 (make-array '(10 10)
-                  :element-type '(or null an-undefined-type)))))
+(assert-error (upgraded-array-element-type 'an-undefined-type))
 
 (with-test (:name :xchg-misencoding)
   (assert (eql (funcall (compile nil '(lambda (a b)
@@ -5100,3 +5136,158 @@
     (assert (< (approx-lines-of-assembly-code
                 '(or system-area-pointer (sb-kernel:simple-unboxed-array (*))))
                27))))
+
+(with-test (:name :local-argument-mismatch-error-string)
+  (let ((f (compile nil `(lambda (x)
+                           (flet ((foo ()))
+                             (foo x))))))
+    (multiple-value-bind (ok err) (ignore-errors (funcall f 42))
+      (assert (not ok))
+      (assert (search "FLET FOO" (princ-to-string err))))))
+
+(with-test (:name :bug-1310574-0)
+  (multiple-value-bind (function warning failure)
+      (compile nil `(lambda (a)
+                      (typecase a
+                        ((or (array * (* * 3)) (array * (* * 4)))
+                         (case (array-rank a)
+                           (2 (aref a 1 2)))))))
+    (declare (ignore function))
+    (assert (not warning))
+    (assert (not failure))))
+
+(with-test (:name :bug-1310574-1)
+  (multiple-value-bind (function warning failure)
+      (compile nil `(lambda (a)
+                      (typecase a
+                        ((or (array * ()) (array * (1)) (array * (1 2)))
+                         (case (array-rank a)
+                           (3 (aref a 1 2 3)))))))
+    (declare (ignore function))
+    (assert (not warning))
+    (assert (not failure))))
+
+(with-test (:name :bug-573747)
+  (multiple-value-bind (function warnings-p failure-p)
+      (compile nil '(lambda (x) (progn (declare (integer x)) (* x 6))))
+    (assert warnings-p)
+    (assert failure-p)))
+
+;; Something in this function used to confuse lifetime analysis into
+;; recording multiple conflicts for a single TNs in the dolist block.
+(with-test (:name :bug-1327008)
+  (handler-bind (((or style-warning compiler-note)
+                   (lambda (c)
+                     (muffle-warning c))))
+    (compile nil
+             `(lambda (scheduler-spec
+                       schedule-generation-method
+                       utc-earliest-time utc-latest-time
+                       utc-other-earliest-time utc-other-latest-time
+                       &rest keys
+                       &key queue
+                         maximum-mileage
+                         maximum-extra-legs
+                         maximum-connection-time
+                         slice-number
+                         scheduler-hints
+                         permitted-route-locations prohibited-route-locations
+                         preferred-connection-locations disfavored-connection-locations
+                         origins destinations
+                         permitted-carriers prohibited-carriers
+                         permitted-operating-carriers prohibited-operating-carriers
+                         start-airports end-airports
+                         circuity-limit
+                         specified-circuity-limit-extra-miles
+                         (preferred-carriers :unspecified)
+                       &allow-other-keys)
+                (declare (optimize speed))
+                (let  ((table1 (list nil))
+                       (table2 (list nil))
+                       (skip-flifo-checks (getf scheduler-spec :skip-flifo-checks))
+                       (construct-gaps-p (getf scheduler-spec :construct-gaps-p))
+                       (gap-locations (getf scheduler-spec :gap-locations))
+                       (result-array (make-array 100))
+                       (number-dequeued 0)
+                       (n-new 0)
+                       (n-calcs 0)
+                       (exit-reason 0)
+                       (prev-start-airports origins)
+                       (prev-end-airports destinations)
+                       (prev-permitted-carriers permitted-carriers))
+                  (flet ((run-with-hint (hint random-magic other-randomness
+                                         maximum-extra-legs
+                                         preferred-origins
+                                         preferred-destinations
+                                         same-pass-p)
+                           (let* ((hint-permitted-carriers (first hint))
+                                  (preferred-end-airports
+                                    (ecase schedule-generation-method
+                                      (:DEPARTURE preferred-destinations)
+                                      (:ARRIVAL preferred-origins)))
+                                  (revised-permitted-carriers
+                                    (cond ((and hint-permitted-carriers
+                                                (not (eq permitted-carriers :ANY)))
+                                           (intersection permitted-carriers
+                                                         hint-permitted-carriers))
+                                          (hint-permitted-carriers)
+                                          (permitted-carriers)))
+                                  (revised-maximum-mileage
+                                    (min (let ((maximum-mileage 0))
+                                           (dolist (o start-airports)
+                                             (dolist (d end-airports)
+                                               (setf maximum-mileage
+                                                     (max maximum-mileage (mileage o d)))))
+                                           (round (+ (* circuity-limit maximum-mileage)
+                                                     (or specified-circuity-limit-extra-miles
+                                                         (hairy-calculation slice-number)))))
+                                         maximum-mileage)))
+                             (when (or (not (equal start-airports prev-start-airports))
+                                       (not (equal end-airports prev-end-airports))
+                                       (and (not (equal revised-permitted-carriers
+                                                        prev-permitted-carriers))))
+                               (incf n-calcs)
+                               (calculate-vectors
+                                prohibited-carriers
+                                permitted-operating-carriers
+                                prohibited-operating-carriers
+                                permitted-route-locations
+                                prohibited-route-locations
+                                construct-gaps-p
+                                gap-locations
+                                preferred-carriers)
+                               (setf prev-permitted-carriers revised-permitted-carriers))
+                             (multiple-value-bind (this-number-dequeued
+                                                   this-exit-reason
+                                                   this-n-new)
+                                 (apply #'schedule-loop
+                                        utc-earliest-time  utc-other-earliest-time
+                                        utc-latest-time    utc-other-latest-time
+                                        scheduler-spec     schedule-generation-method
+                                        queue
+                                        :maximum-mileage revised-maximum-mileage
+                                        :maximum-extra-legs maximum-extra-legs
+                                        :maximum-connection-time maximum-connection-time
+                                        :same-pass-p same-pass-p
+                                        :preferred-end-airports preferred-end-airports
+                                        :maximum-blah random-magic
+                                        :skip-flifo-checks skip-flifo-checks
+                                        :magic1 table1
+                                        :magic2 table2
+                                        :preferred-connection-locations preferred-connection-locations
+                                        :disfavored-connection-locations disfavored-connection-locations
+                                        keys)
+                               (when other-randomness
+                                 (loop for i fixnum from n-new to (+ n-new (1- this-n-new))
+                                       do (hairy-calculation i result-array)))
+                               (incf number-dequeued this-number-dequeued)
+                               (incf n-new this-n-new)
+                               (setq exit-reason (logior exit-reason this-exit-reason))))))
+                    (let ((n-hints-processed 0))
+                      (dolist (hint scheduler-hints)
+                        (run-with-hint hint n-hints-processed t 0
+                                       nil nil nil)
+                        (incf n-hints-processed)))
+                    (run-with-hint nil 42 nil maximum-extra-legs
+                                   '(yyy) '(xxx) t))
+                  exit-reason)))))

@@ -248,8 +248,8 @@
                              ',result-type-value))
                    (t (bug "impossible (?) sequence type"))))
             (t
-             (let* ((seqs (cons seq seqs))
-                    (seq-args (make-gensym-list (length seqs))))
+             (let* ((all-seqs (cons seq seqs))
+                    (seq-args (make-gensym-list (length all-seqs))))
                (multiple-value-bind (push-dacc result)
                    (ecase result-supertype
                      (null (values nil nil))
@@ -263,17 +263,24 @@
                  ;; FUNCALL and ALIEN-FUNCALL, and for the same
                  ;; reason: we need to get the runtime values of each
                  ;; of the &REST vars.)
-                 `(lambda (result-type fun ,@seq-args)
-                    (declare (ignore result-type))
-                    (let ((fun (%coerce-callable-to-fun fun))
-                          (acc nil))
-                      (declare (type list acc))
-                      (declare (ignorable acc))
-                      ,(build-sequence-iterator
-                        seqs seq-args
-                        :result result
-                        :body push-dacc
-                        :fast (policy node (> speed space))))))))))))
+                 (block nil
+                   (let ((gave-up
+                           (catch 'give-up-ir1-transform
+                             (return
+                               `(lambda (result-type fun ,@seq-args)
+                                  (declare (ignore result-type))
+                                  (let ((fun (%coerce-callable-to-fun fun))
+                                        (acc nil))
+                                    (declare (type list acc))
+                                    (declare (ignorable acc))
+                                    ,(build-sequence-iterator
+                                      all-seqs seq-args
+                                      :result result
+                                      :body push-dacc
+                                      :fast (policy node (> speed space)))))))))
+                     (if (and (null result-type-value) (null seqs))
+                         '(%map-for-effect-arity-1 fun seq)
+                         (throw 'give-up-ir1-transform gave-up)))))))))))
 
 ;;; MAP-INTO
 (deftransform map-into ((result fun &rest seqs)
@@ -981,6 +988,20 @@
 ;;; inline.  The UB*-BASH-COPY transforms might fix things up later
 ;;; anyway.
 
+(defun inlineable-copy-vector-p (type)
+  (and (array-type-p type)
+       ;; The two transforms that use this test already specify that their
+       ;; sequence argument is a VECTOR,
+       ;; so this seems like it would be more efficient as
+       ;;  and (not (array-type-complexp type))
+       ;;      (not (eq (array-type-element-type type) *wild-type*))
+       ;; Anyway it no longer works to write this as a single specifier
+       ;; '(or (simple-unboxed-array (*)) simple-vector) because that
+       ;; type is just (simple-array * (*)) which isn't amenable to
+       ;; inline copying since we don't know what it holds.
+       (or (csubtypep type (specifier-type '(simple-unboxed-array (*))))
+           (csubtypep type (specifier-type 'simple-vector)))))
+
 (defun maybe-expand-copy-loop-inline (src src-offset dst dst-offset length
                                       element-type)
   (let ((saetp (find-saetp element-type)))
@@ -1015,8 +1036,7 @@
                       :node node)
   (let ((type (lvar-type seq)))
     (cond
-      ((and (array-type-p type)
-            (csubtypep type (specifier-type '(or (simple-unboxed-array (*)) simple-vector)))
+      ((and (inlineable-copy-vector-p type)
             (policy node (> speed space)))
        (let ((element-type (type-specifier (array-type-specialized-element-type type))))
          `(let* ((length (length seq))
@@ -1045,8 +1065,7 @@
 
 (deftransform copy-seq ((seq) (vector))
   (let ((type (lvar-type seq)))
-    (cond ((and (array-type-p type)
-                (csubtypep type (specifier-type '(or (simple-unboxed-array (*)) simple-vector))))
+    (cond ((inlineable-copy-vector-p type)
            (let ((element-type (type-specifier (array-type-specialized-element-type type))))
              `(let* ((length (length seq))
                      (result (make-array length :element-type ',element-type)))
@@ -1089,6 +1108,7 @@
      `(block search
         (flet ((oops (vector start end)
                  (sequence-bounding-indices-bad-error vector start end)))
+          (declare (ignorable #'oops))
           (let* ((len1 (length pattern))
                  (len2 (length text))
                  (end1 (or end1 len1))

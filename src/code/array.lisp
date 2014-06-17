@@ -340,10 +340,10 @@
                     ,sb!vm:complex-array-widetag)
                    (with-array-data ((array array) (start) (end))
                      (declare (ignore start end))
-                     (widetag-of array)))
+                     (%other-pointer-widetag array)))
                   (t
                    widetag))))
-    (let ((widetag (widetag-of array)))
+    (let ((widetag (%other-pointer-widetag array)))
       (make-case))))
 
 ;;; Widetag is the widetag of the underlying vector,
@@ -636,12 +636,15 @@ of specialized arrays is supported."
              (let* ((type (sb!vm:saetp-specifier saetp))
                     (atype `(simple-array ,type (*))))
                `(named-lambda optimized-data-vector-ref (vector index)
-                  (declare (optimize speed (safety 0)))
-                  (data-vector-ref (the ,atype vector)
-                                   (locally
-                                       (declare (optimize (safety 1)))
-                                     (the index
-                                       (,@check-form index)))))))
+                  (declare (optimize speed (safety 0))
+                           (ignorable index))
+                  ,(if type
+                       `(data-vector-ref (the ,atype vector)
+                                         (locally
+                                             (declare (optimize (safety 1)))
+                                           (the index
+                                                (,@check-form index))))
+                       `(data-nil-vector-ref (the ,atype vector) index)))))
            (define-setter (saetp check-form)
              (let* ((type (sb!vm:saetp-specifier saetp))
                     (atype `(simple-array ,type (*))))
@@ -851,7 +854,7 @@ of specialized arrays is supported."
 (defun array-element-type (array)
   #!+sb-doc
   "Return the type of the elements of the array"
-  (let ((widetag (widetag-of array)))
+  (let ((widetag (%other-pointer-widetag array)))
     (macrolet ((pick-element-type (&rest stuff)
                  `(cond ,@(mapcar (lambda (stuff)
                                     (cons
@@ -1130,7 +1133,7 @@ of specialized arrays is supported."
                         (setf new-data
                               (data-vector-from-inits
                                dimensions new-length element-type
-                               (widetag-of old-data) nil
+                               (%other-pointer-widetag old-data) nil
                                initial-contents initial-contents-p
                                initial-element initial-element-p))
                         ;; Provide :END1 to avoid full call to LENGTH
@@ -1159,7 +1162,7 @@ of specialized arrays is supported."
                                      (data-vector-from-inits
                                       dimensions new-length
                                       element-type
-                                      (widetag-of old-data) nil
+                                      (%other-pointer-widetag old-data) nil
                                       () nil
                                       initial-element initial-element-p)
                                      old-data)))

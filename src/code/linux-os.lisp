@@ -18,7 +18,7 @@
 (defun software-type ()
   #!+sb-doc
   "Return a string describing the supporting software."
-  (values "Linux"))
+  "Linux")
 
 ;;; FIXME: More duplicated logic here vrt. other oses. Abstract into
 ;;; uname-software-version?

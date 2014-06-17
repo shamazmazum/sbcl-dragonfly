@@ -39,9 +39,13 @@
   #include <sys/times.h>
   #include <sys/wait.h>
   #include <sys/ioctl.h>
+#ifdef LISP_FEATURE_ANDROID
+  #include <termios.h>
+#else
   #include <sys/termios.h>
-  #include <sys/time.h>
   #include <langinfo.h>
+#endif
+  #include <sys/time.h>
   #include <dlfcn.h>
 #endif
 
@@ -298,6 +302,7 @@ main(int argc, char *argv[])
     DEFTYPE("mode-t", mode_t);
 
     DEFTYPE("wst-dev-t", wst_dev_t);
+    DEFTYPE("wst-ino-t", wst_ino_t);
     DEFTYPE("wst-off-t", wst_off_t);
     DEFTYPE("wst-blksize-t", wst_blksize_t);
     DEFTYPE("wst-blkcnt-t", wst_blkcnt_t);
@@ -328,10 +333,10 @@ main(int argc, char *argv[])
     defconstant("pollpri", POLLPRI);
     defconstant("pollhup", POLLHUP);
     DEFTYPE("nfds-t", nfds_t);
-
+#ifndef LISP_FEATURE_ANDROID
     printf(";;; langinfo\n");
     defconstant("codeset", CODESET);
-
+#endif
     printf(";;; types, types, types\n");
     DEFTYPE("clock-t", clock_t);
     DEFTYPE("dev-t",   dev_t);
@@ -351,6 +356,7 @@ main(int argc, char *argv[])
     DEFTYPE("uid-t",   uid_t);
     printf(";; Types in src/runtime/wrap.h. See that file for explantion.\n");
     printf(";; Don't use these types for anything other than the stat wrapper.\n");
+    DEFTYPE("wst-ino-t", wst_ino_t);
     DEFTYPE("wst-dev-t", wst_dev_t);
     DEFTYPE("wst-off-t", wst_off_t);
     DEFTYPE("wst-blksize-t", wst_blksize_t);
@@ -527,6 +533,11 @@ main(int argc, char *argv[])
         DEFSLOT(tv-sec, tv_sec);
         DEFSLOT(tv-nsec, tv_nsec));
     printf("\n");
+
+#ifdef LISP_FEATURE_ANDROID
+    defconstant("path-max", PATH_MAX);
+    printf("\n");
+#endif
 
 #ifdef LISP_FEATURE_BSD
     printf(";;; sysctl(3) names\n");

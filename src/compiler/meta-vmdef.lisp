@@ -45,33 +45,26 @@
      (aver (not (logtest size (1- size-alignment))))
      (aver (not (logtest size-increment (1- size-alignment))))))
 
-  (let ((res (if (eq kind :non-packed)
+  (let ((sb (if (eq kind :non-packed)
                  (make-sb :name name :kind kind)
                  (make-finite-sb :name name :kind kind :size size
                                  :size-increment size-increment
                                  :size-alignment size-alignment))))
     `(progn
-       (eval-when (:compile-toplevel :load-toplevel :execute)
-         (/show0 "about to SETF GETHASH META-SB-NAMES in DEFINE-STORAGE-BASE")
-         (setf (gethash ',name *backend-meta-sb-names*)
-               ',res))
-       (/show0 "about to SETF GETHASH SB-NAMES in DEFINE-STORAGE-BASE")
-       ,(if (eq kind :non-packed)
-            `(setf (gethash ',name *backend-sb-names*)
-                   (copy-sb ',res))
-            `(let ((res (copy-finite-sb ',res)))
+       (/show0 "in DEFINE-STORAGE-BASE")
+       ;; DEFINE-STORAGE-CLASS need the storage bases while building
+       ;; the cross-compiler, but to eval this during cross-compilation
+       ;; would kill the cross-compiler.
+       (eval-when (#-sb-xc :compile-toplevel :load-toplevel :execute)
+         (let ((sb (,(if (eq kind :non-packed) 'copy-sb 'copy-finite-sb)
+                    ',sb)))
+           (setf *backend-sb-list*
+                 (cons sb (remove ',name *backend-sb-list* :key #'sb-name)))))
+       ,@(unless (eq kind :non-packed)
+           `((let ((res (sb-or-lose ',name)))
                (/show0 "not :NON-PACKED, i.e. hairy case")
                (setf (finite-sb-always-live res)
-                     (make-array ',size
-                                 :initial-element
-                                 #-(or sb-xc sb-xc-host) #*
-                                 ;; The cross-compiler isn't very good
-                                 ;; at dumping specialized arrays; we
-                                 ;; work around that by postponing
-                                 ;; generation of the specialized
-                                 ;; array 'til runtime.
-                                 #+(or sb-xc sb-xc-host)
-                                 (make-array 0 :element-type 'bit)))
+                     (make-array ',size :initial-element #*))
                (/show0 "doing second SETF")
                (setf (finite-sb-conflicts res)
                      (make-array ',size :initial-element '#()))
@@ -80,15 +73,7 @@
                      (make-array ',size :initial-element nil))
                (/show0 "doing fourth SETF")
                (setf (finite-sb-always-live-count res)
-                     (make-array ',size :initial-element 0))
-               (/show0 "doing fifth and final SETF")
-               (setf (gethash ',name *backend-sb-names*)
-                     res)))
-
-       (/show0 "about to put SB onto/into SB-LIST")
-       (setf *backend-sb-list*
-             (cons (sb-or-lose ',name)
-                   (remove ',name *backend-sb-list* :key #'sb-name)))
+                     (make-array ',size :initial-element 0)))))
        (/show0 "finished with DEFINE-STORAGE-BASE expansion")
        ',name)))
 
@@ -138,7 +123,7 @@
   (unless (= (logcount alignment) 1)
     (error "alignment not a power of two: ~W" alignment))
 
-  (let ((sb (meta-sb-or-lose sb-name)))
+  (let ((sb (sb-or-lose sb-name)))
     (if (eq (sb-kind sb) :finite)
         (let ((size (sb-size sb))
               (element-size (eval element-size)))
@@ -162,26 +147,25 @@
   (let ((nstack-p
          (if (or (eq sb-name 'non-descriptor-stack)
                  (find 'non-descriptor-stack
-                       (mapcar #'meta-sc-or-lose alternate-scs)
+                       (mapcar #'sc-or-lose alternate-scs)
                        :key (lambda (x)
                               (sb-name (sc-sb x)))))
              t nil)))
     `(progn
-       (eval-when (:compile-toplevel :load-toplevel :execute)
+       (eval-when (#-sb-xc :compile-toplevel :load-toplevel :execute)
          (let ((res (make-sc :name ',name :number ',number
-                             :sb (meta-sb-or-lose ',sb-name)
+                             :sb (sb-or-lose ',sb-name)
                              :element-size ,element-size
                              :alignment ,alignment
                              :locations ',locations
                              :reserve-locations ',reserve-locations
                              :save-p ',save-p
                              :number-stack-p ,nstack-p
-                             :alternate-scs (mapcar #'meta-sc-or-lose
+                             :alternate-scs (mapcar #'sc-or-lose
                                                     ',alternate-scs)
-                             :constant-scs (mapcar #'meta-sc-or-lose
+                             :constant-scs (mapcar #'sc-or-lose
                                                    ',constant-scs))))
-           (setf (gethash ',name *backend-meta-sc-names*) res)
-           (setf (svref *backend-meta-sc-numbers* ',number) res)
+           (setf (gethash ',name *backend-sc-names*) res)
            (setf (svref (sc-load-costs res) ',number) 0)))
 
        (let ((old (svref *backend-sc-numbers* ',number)))
@@ -189,10 +173,8 @@
            (warn "redefining SC number ~W from ~S to ~S" ',number
                  (sc-name old) ',name)))
 
-       (setf (svref *backend-sc-numbers* ',number)
-             (meta-sc-or-lose ',name))
-       (setf (gethash ',name *backend-sc-names*)
-             (meta-sc-or-lose ',name))
+       (setf (svref *backend-sc-numbers* ',number) (sc-or-lose ',name))
+       (setf (gethash ',name *backend-sc-names*) (sc-or-lose ',name))
        (setf (sc-sb (sc-or-lose ',name)) (sb-or-lose ',sb-name))
        ',name)))
 
@@ -205,9 +187,9 @@
         (tos (cdr ,scs) (cddr tos)))
        ((null froms))
      (dolist (from (car froms))
-       (let ((,from-sc-var (meta-sc-or-lose from)))
+       (let ((,from-sc-var (sc-or-lose from)))
          (dolist (to (car tos))
-           (let ((,to-sc-var (meta-sc-or-lose to)))
+           (let ((,to-sc-var (sc-or-lose to)))
              ,@body))))))
 
 ;;; Define the function NAME and note it as the function used for
@@ -274,54 +256,29 @@
 
 ;;;; primitive type definition
 
-(defun meta-primitive-type-or-lose (name)
-  (the primitive-type
-       (or (gethash name *backend-meta-primitive-type-names*)
-           (error "~S is not a defined primitive type." name))))
-
 ;;; Define a primitive type NAME. Each SCS entry specifies a storage
 ;;; class that values of this type may be allocated in. TYPE is the
 ;;; type descriptor for the Lisp type that is equivalent to this type.
 (defmacro !def-primitive-type (name scs &key (type name))
   (declare (type symbol name) (type list scs))
-  (let ((scns (mapcar #'meta-sc-number-or-lose scs)))
+  (let ((scns (mapcar #'sc-number-or-lose scs)))
     `(progn
        (/show0 "doing !DEF-PRIMITIVE-TYPE, NAME=..")
        (/primitive-print ,(symbol-name name))
-       (eval-when (#-sb-xc :compile-toplevel :load-toplevel :execute)
-         (setf (gethash ',name *backend-meta-primitive-type-names*)
-               (make-primitive-type :name ',name
-                                    :scs ',scns
-                                    :specifier ',type)))
-       ,(once-only ((n-old `(gethash ',name *backend-primitive-type-names*)))
-          `(progn
-             ;; If the PRIMITIVE-TYPE structure already exists, we
-             ;; destructively modify it so that existing references in
-             ;; templates won't be invalidated. FIXME: This should no
-             ;; longer be an issue in SBCL, since we don't try to do
-             ;; serious surgery on ourselves. Probably this should
-             ;; just become an assertion that N-OLD is NIL, so that we
-             ;; don't have to try to maintain the correctness of the
-             ;; never-ordinarily-used clause.
-             (/show0 "in !DEF-PRIMITIVE-TYPE, about to COND")
-             (cond (,n-old
-                    (/show0 "in ,N-OLD clause of COND")
-                    (setf (primitive-type-scs ,n-old) ',scns)
-                    (setf (primitive-type-specifier ,n-old) ',type))
-                   (t
-                    (/show0 "in T clause of COND")
-                    (setf (gethash ',name *backend-primitive-type-names*)
-                          (make-primitive-type :name ',name
-                                               :scs ',scns
-                                               :specifier ',type))))
-             (/show0 "done with !DEF-PRIMITIVE-TYPE")
-             ',name)))))
+       (assert (not (gethash ',name *backend-primitive-type-names*)))
+       (setf (gethash ',name *backend-primitive-type-names*)
+             (make-primitive-type :name ',name
+                                  :scs ',scns
+                                  :specifier ',type))
+       (/show0 "done with !DEF-PRIMITIVE-TYPE")
+       ',name)))
 
 ;;; Define NAME to be an alias for RESULT in VOP operand type restrictions.
 (defmacro !def-primitive-type-alias (name result)
   ;; Just record the translation.
-  `(eval-when (:compile-toplevel :load-toplevel :execute)
-     (setf (gethash ',name *backend-primitive-type-aliases*) ',result)
+  `(progn
+     (assert (not (assoc ',name *backend-primitive-type-aliases*)))
+     (push (cons ',name ,result) *backend-primitive-type-aliases*)
      ',name))
 
 (defparameter *primitive-type-slot-alist*
@@ -352,18 +309,6 @@
           types)
        nil)))
 
-;;; Return true if SC is either one of PTYPE's SC's, or one of those
-;;; SC's alternate or constant SCs.
-(defun meta-sc-allowed-by-primitive-type (sc ptype)
-  (declare (type sc sc) (type primitive-type ptype))
-  (let ((scn (sc-number sc)))
-    (dolist (allowed (primitive-type-scs ptype) nil)
-      (when (eql allowed scn)
-        (return t))
-      (let ((allowed-sc (svref *backend-meta-sc-numbers* allowed)))
-        (when (or (member sc (sc-alternate-scs allowed-sc))
-                  (member sc (sc-constant-scs allowed-sc)))
-          (return t))))))
 
 ;;;; VOP definition structures
 ;;;;
@@ -616,9 +561,9 @@
             (setf (aref results index)
                   (if offset
                       (+ (ash offset (1+ sc-bits))
-                         (ash (meta-sc-number-or-lose sc) 1)
+                         (ash (sc-number-or-lose sc) 1)
                          1)
-                      (ash (meta-sc-number-or-lose sc) 1))))
+                      (ash (sc-number-or-lose sc) 1))))
           (incf index))
         ;; KLUDGE: The load-time MAKE-ARRAY here is an artifact of our
         ;; cross-compilation strategy, and the conservative
@@ -727,7 +672,7 @@
 (defun find-move-funs (op load-p)
   (collect ((funs))
     (dolist (sc-name (operand-parse-scs op))
-      (let* ((sc (meta-sc-or-lose sc-name))
+      (let* ((sc (sc-or-lose sc-name))
              (scn (sc-number sc))
              (load-scs (append (when load-p
                                  (sc-constant-scs sc))
@@ -889,7 +834,7 @@
 ;;; operands, and a single OPERAND-PARSE describing any more operand.
 ;;; If we are inheriting a VOP, we default attributes to the inherited
 ;;; operand of the same name.
-(defun !parse-vop-operands (parse specs kind)
+(defun parse-vop-operands (parse specs kind)
   (declare (list specs)
            (type (member :argument :result) kind))
   (let ((num -1)
@@ -1060,12 +1005,12 @@
       (case (first spec)
         (:args
          (multiple-value-bind (fixed more)
-             (!parse-vop-operands parse (rest spec) :argument)
+             (parse-vop-operands parse (rest spec) :argument)
            (setf (vop-parse-args parse) fixed)
            (setf (vop-parse-more-args parse) more)))
         (:results
          (multiple-value-bind (fixed more)
-             (!parse-vop-operands parse (rest spec) :result)
+             (parse-vop-operands parse (rest spec) :result)
            (setf (vop-parse-results parse) fixed)
            (setf (vop-parse-more-results parse) more))
          (setf (vop-parse-conditional-p parse) nil))
@@ -1109,10 +1054,10 @@
          (setf (vop-parse-note parse) (vop-spec-arg spec '(or string null))))
         (:arg-types
          (setf (vop-parse-arg-types parse)
-               (!parse-vop-operand-types (rest spec) t)))
+               (parse-vop-operand-types (rest spec) t)))
         (:result-types
          (setf (vop-parse-result-types parse)
-               (!parse-vop-operand-types (rest spec) nil)))
+               (parse-vop-operand-types (rest spec) nil)))
         (:translate
          (setf (vop-parse-translate parse) (rest spec)))
         (:guard
@@ -1149,7 +1094,7 @@
         (costs (make-array sc-number-limit :initial-element nil))
         (load-scs (make-array sc-number-limit :initial-element nil)))
     (dolist (sc-name scs)
-      (let* ((load-sc (meta-sc-or-lose sc-name))
+      (let* ((load-sc (sc-or-lose sc-name))
              (load-scn (sc-number load-sc)))
         (setf (svref costs load-scn) 0)
         (setf (svref load-scs load-scn) t)
@@ -1175,7 +1120,7 @@
 
         (dotimes (i sc-number-limit)
           (unless (svref costs i)
-            (let ((op-sc (svref *backend-meta-sc-numbers* i)))
+            (let ((op-sc (svref *backend-sc-numbers* i)))
               (when op-sc
                 (let ((cost (if load-p
                                 (svref (sc-move-costs load-sc) i)
@@ -1235,13 +1180,14 @@
 
 ;;; Given a list of arg/result restrictions, check for valid syntax
 ;;; and convert to canonical form.
-(defun !parse-vop-operand-types (specs args-p)
+(defun parse-vop-operand-types (specs args-p)
   (declare (list specs))
-  (labels ((parse-operand-type (spec)
+  (labels ((primtype-alias-p (spec)
+             (cdr (assq spec *backend-primitive-type-aliases*)))
+           (parse-operand-type (spec)
              (cond ((eq spec '*) spec)
                    ((symbolp spec)
-                    (let ((alias (gethash spec
-                                          *backend-primitive-type-aliases*)))
+                    (let ((alias (primtype-alias-p spec)))
                       (if alias
                           (parse-operand-type alias)
                           `(:or ,spec))))
@@ -1251,14 +1197,11 @@
                     (case (first spec)
                       (:or
                        (collect ((results))
-                         (results :or)
                          (dolist (item (cdr spec))
                            (unless (symbolp item)
                              (error "bad PRIMITIVE-TYPE name in ~S: ~S"
                                     spec item))
-                           (let ((alias
-                                  (gethash item
-                                           *backend-primitive-type-aliases*)))
+                           (let ((alias (primtype-alias-p item)))
                              (if alias
                                  (let ((alias (parse-operand-type alias)))
                                    (unless (eq (car alias) :or)
@@ -1268,9 +1211,7 @@
                                    (dolist (x (cdr alias))
                                      (results x)))
                                  (results item))))
-                         (remove-duplicates (results)
-                                            :test #'eq
-                                            :start 1)))
+                         `(:or ,@(remove-duplicates (results) :test #'eq))))
                       (:constant
                        (unless args-p
                          (error "can't :CONSTANT for a result"))
@@ -1298,7 +1239,7 @@
         (declare (ignore costs))
         (dolist (ptype ptypes)
           (unless (dolist (rep (primitive-type-scs
-                                (meta-primitive-type-or-lose ptype))
+                                (primitive-type-or-lose ptype))
                                nil)
                     (when (svref load-scs rep) (return t)))
             (error "In the ~A ~:[result~;argument~] to VOP ~S,~@
@@ -1313,9 +1254,9 @@
       (dolist (sc scs)
         (unless (or (eq type '*)
                     (dolist (ptype ptypes nil)
-                      (when (meta-sc-allowed-by-primitive-type
-                             (meta-sc-or-lose sc)
-                             (meta-primitive-type-or-lose ptype))
+                      (when (sc-allowed-by-primitive-type
+                             (sc-or-lose sc)
+                             (primitive-type-or-lose ptype))
                         (return t))))
           (warn "~:[Result~;Argument~] ~A to VOP ~S~@
                  has SC restriction ~S which is ~
@@ -1890,8 +1831,7 @@
               (clauses `(t nil ,@(rest case)))
               (return))
             (clauses `((or ,@(mapcar (lambda (x)
-                                       `(eql ,(meta-sc-number-or-lose x)
-                                             ,n-sc))
+                                       `(eql ,(sc-number-or-lose x) ,n-sc))
                                      (if (atom head) (list head) head)))
                        nil ,@(rest case))))))
 
@@ -1903,7 +1843,7 @@
 (defmacro sc-is (tn &rest scs)
   (once-only ((n-sc `(sc-number (tn-sc ,tn))))
     `(or ,@(mapcar (lambda (x)
-                     `(eql ,n-sc ,(meta-sc-number-or-lose x)))
+                     `(eql ,n-sc ,(sc-number-or-lose x)))
                    scs))))
 
 ;;; Iterate over the IR2 blocks in component, in emission order.

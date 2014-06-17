@@ -136,12 +136,14 @@
 ;;; default behavior.
 (defmacro with-char-macro-result ((result-var supplied-p-var)
                                   (stream char) &body body)
-  `(multiple-value-call (lambda (&optional (,result-var nil ,supplied-p-var)
-                                 &rest junk)
-                          (declare (ignore junk)) ; is this ANSI-specified?
-                          ,@body)
-     (let ((entry (get-raw-cmt-entry ,char *readtable*)))
-       (funcall (!cmt-entry-to-function entry #'read-token) ,stream ,char))))
+  (with-unique-names (proc)
+    `(dx-flet ((,proc (&optional (,result-var nil ,supplied-p-var) &rest junk)
+                 (declare (ignore junk)) ; is this ANSI-specified?
+                 ,@body))
+       (multiple-value-call #',proc
+         (let ((entry (get-raw-cmt-entry ,char *readtable*)))
+           (funcall (!cmt-entry-to-function entry #'read-token)
+                    ,stream ,char))))))
 
 (defun undefined-macro-char (stream char)
   (unless *read-suppress*
@@ -427,35 +429,25 @@ standard Lisp readtable when NIL."
 (defun flush-whitespace (stream)
   ;; This flushes whitespace chars, returning the last char it read (a
   ;; non-white one). It always gets an error on end-of-file.
-  (let ((stream (in-synonym-of stream)))
-    (if (ansi-stream-p stream)
-        (prepare-for-fast-read-char stream
-          (do ((attribute-array (character-attribute-array *readtable*))
-               (attribute-hash-table
-                (character-attribute-hash-table *readtable*))
-               (char (fast-read-char t) (fast-read-char t)))
-              ((/= (the fixnum
-                     (if (typep char 'base-char)
-                         (aref attribute-array (char-code char))
-                         (gethash char attribute-hash-table
-                                  +char-attr-constituent+)))
-                   +char-attr-whitespace+)
-               (done-with-fast-read-char)
-               char)))
+  (let* ((stream (in-synonym-of stream))
+         (rt *readtable*)
+         (attribute-array (character-attribute-array rt))
+         (attribute-hash-table (character-attribute-hash-table rt)))
+    (macrolet ((done-p ()
+                '(not (eql (if (typep char 'base-char)
+                               (aref attribute-array (char-code char))
+                               (gethash char attribute-hash-table
+                                        +char-attr-constituent+))
+                           +char-attr-whitespace+))))
+      (if (ansi-stream-p stream)
+          (prepare-for-fast-read-char stream
+            (do ((char (fast-read-char t) (fast-read-char t)))
+                ((done-p)
+                 (done-with-fast-read-char)
+                 char)))
         ;; CLOS stream
-        (do ((attribute-array (character-attribute-array *readtable*))
-             (attribute-hash-table
-              (character-attribute-hash-table *readtable*))
-             (char (read-char stream nil :eof) (read-char stream nil :eof)))
-            ((or (eq char :eof)
-                 (/= (the fixnum
-                       (if (typep char 'base-char)
-                           (aref attribute-array (char-code char))
-                           (gethash char attribute-hash-table
-                                    +char-attr-constituent+)))
-                     +char-attr-whitespace+))
-             (if (eq char :eof)
-                 (error 'end-of-file :stream stream)
+          (do ((char (read-char stream nil nil) (read-char stream nil nil)))
+              ((if char (done-p) (error 'end-of-file :stream stream))
                  char))))))
 
 ;;;; temporary initialization hack
@@ -484,8 +476,10 @@ standard Lisp readtable when NIL."
   ;; Easy macro-character definitions are in this source file.
   (set-macro-character #\" #'read-string)
   (set-macro-character #\' #'read-quote)
-  (set-macro-character #\( #'read-list)
-  (set-macro-character #\) #'read-right-paren)
+  ;; Using symbols makes these traceable and redefineable with ease,
+  ;; as well as avoids a forward-referenced function (from "backq")
+  (set-macro-character #\( 'read-list)
+  (set-macro-character #\) 'read-right-paren)
   (set-macro-character #\; #'read-comment)
   ;; (The hairier macro-character definitions, for #\# and #\`, are
   ;; defined elsewhere, in their own source files.)
@@ -502,70 +496,159 @@ standard Lisp readtable when NIL."
 
 ;;;; implementation of the read buffer
 
+(defstruct (token-buf (:predicate nil) (:copier nil)
+                      (:constructor
+                       make-token-buf
+                       (&aux
+                        (initial-string (make-string 128))
+                        (string initial-string)
+                        (adjustable-string
+                         (make-array 0
+                                     :element-type 'character
+                                     :fill-pointer nil
+                                     :displaced-to string)))))
+  ;; The string accumulated during reading of tokens.
+  ;; Always starts out EQ to 'initial-string'.
+  (string nil :type (simple-array character (*)))
+  ;; Counter advanced as characters are placed into 'string'
+  (fill-ptr 0 :type index)
+  ;; Counter advanced as characters are consumed from 'string' on re-scan
+  ;; by auxilliary functions MAKE-{INTEGER,FLOAT,RATIONAL} etc.
+  (cursor 0 :type index)
+  ;; A string used only for FIND-PACKAGE calls in package-qualified
+  ;; symbols so that we don't need to call SUBSEQ on the 'string'.
+  (adjustable-string nil :type (and (array character (*)) (not simple-array)))
+  ;; A small string that is permanently assigned into this token-buf.
+  (initial-string nil :type (simple-array character (128))
+                  :read-only t)
+  ;; Link to next TOKEN-BUF, to chain the *TOKEN-BUF-POOL* together.
+  (next nil :type (or null token-buf)))
+(declaim (freeze-type token-buf))
+
+(def!method print-object ((self token-buf) stream)
+  (print-unreadable-object (self stream :identity t :type t)
+    (format stream "~@[next=~S~]" (token-buf-next self))))
+
+;; The current TOKEN-BUF
+(declaim (type token-buf *read-buffer*))
 (defvar *read-buffer*)
 
-(defvar *inch-ptr*) ; *OUCH-PTR* always points to next char to write.
-(defvar *ouch-ptr*) ; *INCH-PTR* always points to next char to read.
-
-(declaim (type index *inch-ptr* *ouch-ptr*))
-(declaim (type (simple-array character (*)) *read-buffer*))
+;; A list of available TOKEN-BUFs
+;; Should need no toplevel binding if multi-threaded,
+;; but doesn't really matter, as INITIAL-THREAD-FUNCTION-TRAMPOLINE
+;; rebinds to NIL.
+(declaim (type (or null token-buf) *token-buf-pool*))
+(defvar *token-buf-pool* nil)
 
 (declaim (inline reset-read-buffer))
-(defun reset-read-buffer ()
+(defun reset-read-buffer (&optional (b *read-buffer*))
   ;; Turn *READ-BUFFER* into an empty read buffer.
-  (setq *ouch-ptr* 0)
-  (setq *inch-ptr* 0))
+  (setf (token-buf-fill-ptr b) 0)
+  (setf (token-buf-cursor b) 0))
 
+;; "Output" a character into the reader's buffer.
+;; FIXME: Most code still does not specify the optional argument.
+;;        It is more efficient to do so than not.
 (declaim (inline ouch-read-buffer))
-(defun ouch-read-buffer (char)
+(defun ouch-read-buffer (char &optional (b *read-buffer*))
   ;; When buffer overflow
-  (let ((op *ouch-ptr*))
+  (let ((op (token-buf-fill-ptr b)))
     (declare (optimize (sb!c::insert-array-bounds-checks 0)))
-    (when (>= op (length *read-buffer*))
+    (when (>= op (length (token-buf-string b)))
+    ;; an out-of-line call for the uncommon case avoids bloat.
     ;; Size should be doubled.
       (grow-read-buffer))
-    (setf (elt *read-buffer* op) char)
-    (setq *ouch-ptr* (1+ op))))
+    (setf (elt (token-buf-string b) op) char)
+    (setf (token-buf-fill-ptr b) (1+ op))))
 
 (defun grow-read-buffer ()
-  (let* ((rbl (length *read-buffer*))
-         (new-length (* 2 rbl))
-         (new-buffer (make-string new-length)))
-    (setq *read-buffer* (replace new-buffer *read-buffer*))))
+  (let* ((b *read-buffer*)
+         (string (token-buf-string b)))
+    (setf (token-buf-string b)
+          (replace (make-string (* 2 (length string))) string))))
 
-(defun inch-read-buffer ()
-  (if (>= *inch-ptr* *ouch-ptr*)
-      *eof-object*
-      (prog1
-          (elt *read-buffer* *inch-ptr*)
-        (incf *inch-ptr*))))
+;; Retun the next character from the buffered token, or NIL.
+(declaim (maybe-inline token-buf-getchar))
+(defun token-buf-getchar (b)
+  (declare (optimize (sb!c::insert-array-bounds-checks 0)))
+  (let ((i (token-buf-cursor (truly-the token-buf b))))
+    (and (< i (token-buf-fill-ptr b))
+         (prog1 (elt (token-buf-string b) i)
+           (setf (token-buf-cursor b) (1+ i))))))
 
-(declaim (inline unread-buffer))
-(defun unread-buffer ()
-  (decf *inch-ptr*))
+;; Grab a buffer off the token-buf pool if there is one, or else make one.
+;; This does not need to be protected against other threads because the
+;; pool is thread-local, or against async interrupts. An async signal
+;; delivered anywhere in the midst of the code sequence below can not
+;; corrupt the buffer given to the caller of ACQUIRE-TOKEN-BUF.
+;; Additionally the cleanup is on a "best effort" basis. Async unwinds
+;; through WITH-READ-BUFFER fail to recycle token-bufs, but that's ok.
+(defun acquire-token-buf ()
+  (let ((this-buffer *token-buf-pool*))
+    (cond (this-buffer
+           (shiftf *token-buf-pool* (token-buf-next this-buffer) nil)
+           this-buffer)
+          (t
+           (make-token-buf)))))
 
-(declaim (inline read-unwind-read-buffer))
-(defun read-unwind-read-buffer ()
-  ;; Keep contents, but make next (INCH..) return first character.
-  (setq *inch-ptr* 0))
+(defun release-token-buf (chain)
+  (named-let free ((buffer chain))
+    ;; If 'adjustable-string' was displaced to 'string',
+    ;; adjust it back down to allow GC of the abnormally large string.
+    (unless (eq (%array-data-vector (token-buf-adjustable-string buffer))
+                (token-buf-initial-string buffer))
+      (adjust-array (token-buf-adjustable-string buffer) '(0)
+                    :displaced-to (token-buf-initial-string buffer)))
+    ;; 'initial-string' is assigned into 'string'
+    ;; so not to preserve huge buffers in the pool indefinitely.
+    (setf (token-buf-string buffer) (token-buf-initial-string buffer))
+    (if (token-buf-next buffer)
+        (free (token-buf-next buffer))
+        (setf (token-buf-next buffer) *token-buf-pool*)))
+  (setf *token-buf-pool* chain))
 
-(defun read-buffer-to-string ()
-  (subseq *read-buffer* 0 *ouch-ptr*))
+;; Return a fresh copy of *READ-BUFFER*'s string
+(defun copy-token-buf-string ()
+  (let ((b *read-buffer*))
+    (subseq (token-buf-string b) 0 (token-buf-fill-ptr b))))
 
+;; Return a string displaced to *READ-BUFFER*'s string. Also get a
+;; new token-buf which becomes the value of *READ-BUFFER*,
+;; with its 'next' slot pointing to the old one.
+(defun share-token-buf-string ()
+  (let ((new-buffer (acquire-token-buf))
+        (buffer *read-buffer*))
+    (setf (token-buf-next new-buffer) buffer
+          *read-buffer* new-buffer)
+    ;; It would in theory be faster to make the adjustable array have
+    ;; a fill-pointer, and just set that most of the time. Except we still
+    ;; need the ability to displace to a different string if a package name
+    ;; has >128 characters, so then there'd be two modes of sharing, one of
+    ;; which is rarely exercised and most likely to be subtly wrong.
+    ;; At any rate, SET-ARRAY-HEADER is faster than ADJUST-ARRAY.
+    ;; TODO: find evidence that it is/is-not worth having complicated
+    ;;       mechanism involving a fill-pointer or not.
+    (set-array-header
+     (token-buf-adjustable-string buffer) ; the array
+     (token-buf-string buffer) ; the underlying data
+     (token-buf-fill-ptr buffer) ; total size
+     nil ; fill-pointer
+     0 ; displacement
+     (token-buf-fill-ptr buffer) ; dimension 0
+     t nil))) ; displacedp / newp
+
+;; Acquire a TOKEN-BUF from the pool and execute the body, returning only
+;; the primary value therefrom. Recycle the buffer when done.
+;; No UNWIND-PROTECT - recycling is designed to help with the common case
+;; of normal return and is not intended to be resilient against nonlocal exit.
 (defmacro with-read-buffer (() &body body)
-  `(let* ((*read-buffer* (make-string 128))
-          (*ouch-ptr* 0)
-          (*inch-ptr* 0))
-     ,@body))
-
-(declaim (inline read-buffer-boundp))
-(defun read-buffer-boundp ()
-  (and (boundp '*read-buffer*)
-       (boundp '*ouch-ptr*)
-       (boundp '*inch-ptr*)))
+  `(let* ((*read-buffer* (acquire-token-buf))
+          (result (progn ,@body)))
+     (release-token-buf *read-buffer*)
+     result))
 
 (defun check-for-recursive-read (stream recursive-p operator-name)
-  (when (and recursive-p (not (read-buffer-boundp)))
+  (when (and recursive-p (not (boundp '*read-buffer*)))
     (simple-reader-error
      stream
      "~A was invoked with RECURSIVE-P being true outside ~
@@ -589,6 +672,7 @@ standard Lisp readtable when NIL."
 ;;; Like READ-PRESERVING-WHITESPACE, but doesn't check the read buffer
 ;;; for being set up properly.
 (defun %read-preserving-whitespace (stream eof-error-p eof-value recursive-p)
+  (declare (optimize (sb!c::check-tag-existence 0)))
   (if recursive-p
       ;; a loop for repeating when a macro returns nothing
       (loop
@@ -702,6 +786,7 @@ standard Lisp readtable when NIL."
   (declare (ignore ignore))
   (let* ((thelist (list nil))
          (listtail thelist))
+    (declare (dynamic-extent thelist))
     (do ((firstchar (flush-whitespace stream) (flush-whitespace stream)))
         ((char= firstchar #\) ) (cdr thelist))
       (when (char= firstchar #\.)
@@ -752,26 +837,28 @@ standard Lisp readtable when NIL."
 (defun read-string (stream closech)
   ;; This accumulates chars until it sees same char that invoked it.
   ;; For a very long string, this could end up bloating the read buffer.
-  (reset-read-buffer)
-  (let ((stream (in-synonym-of stream)))
+  (let ((stream (in-synonym-of stream))
+        (buf *read-buffer*)
+        (rt *readtable*))
+    (reset-read-buffer buf)
     (if (ansi-stream-p stream)
         (prepare-for-fast-read-char stream
           (do ((char (fast-read-char t) (fast-read-char t)))
               ((char= char closech)
                (done-with-fast-read-char))
-            (if (single-escape-p char) (setq char (fast-read-char t)))
-            (ouch-read-buffer char)))
+            (if (single-escape-p char rt) (setq char (fast-read-char t)))
+            (ouch-read-buffer char buf)))
         ;; CLOS stream
         (do ((char (read-char stream nil :eof) (read-char stream nil :eof)))
             ((or (eq char :eof) (char= char closech))
              (if (eq char :eof)
                  (error 'end-of-file :stream stream)))
-          (when (single-escape-p char)
+          (when (single-escape-p char rt)
             (setq char (read-char stream nil :eof))
             (if (eq char :eof)
                 (error 'end-of-file :stream stream)))
-          (ouch-read-buffer char))))
-  (read-buffer-to-string))
+          (ouch-read-buffer char buf))))
+  (copy-token-buf-string))
 
 (defun read-right-paren (stream ignore)
   (declare (ignore ignore))
@@ -781,11 +868,12 @@ standard Lisp readtable when NIL."
 ;;; token in *READ-BUFFER*, and return two values:
 ;;; -- a list of the escaped character positions, and
 ;;; -- The position of the first package delimiter (or NIL).
-(defun internal-read-extended-token (stream firstchar escape-firstchar)
-  (reset-read-buffer)
+(defun internal-read-extended-token (stream firstchar escape-firstchar
+                                     &aux (read-buffer *read-buffer*))
+  (reset-read-buffer read-buffer)
   (let ((escapes '()))
     (when escape-firstchar
-      (push *ouch-ptr* escapes)
+      (push (token-buf-fill-ptr read-buffer) escapes)
       (ouch-read-buffer firstchar)
       (setq firstchar (read-char stream nil *eof-object*)))
   (do ((char firstchar (read-char stream nil *eof-object*))
@@ -799,7 +887,7 @@ standard Lisp readtable when NIL."
     (cond ((single-escape-p char)
            ;; It can't be a number, even if it's 1\23.
            ;; Read next char here, so it won't be casified.
-           (push *ouch-ptr* escapes)
+           (push (token-buf-fill-ptr read-buffer) escapes)
            (let ((nextchar (read-char stream nil *eof-object*)))
              (if (eofp nextchar)
                  (reader-eof-error stream "after escape character")
@@ -818,17 +906,17 @@ standard Lisp readtable when NIL."
                    (cond ((eofp nextchar)
                           (reader-eof-error stream "after escape character"))
                          (t
-                          (push *ouch-ptr* escapes)
+                          (push (token-buf-fill-ptr read-buffer) escapes)
                           (ouch-read-buffer nextchar)))))
                 (t
-                 (push *ouch-ptr* escapes)
+                 (push (token-buf-fill-ptr read-buffer) escapes)
                  (ouch-read-buffer ch))))))
           (t
            (when (and (constituentp char)
                       (eql (get-constituent-trait char)
                            +char-attr-package-delimiter+)
                       (not colon))
-             (setq colon *ouch-ptr*))
+             (setq colon (token-buf-fill-ptr read-buffer)))
            (ouch-read-buffer char))))))
 
 ;;;; character classes
@@ -914,19 +1002,19 @@ standard Lisp readtable when NIL."
 ;;; ESCAPES. ESCAPES is a list of the escaped indices, in reverse
 ;;; order.
 (defun casify-read-buffer (escapes)
-  (let ((case (readtable-case *readtable*)))
+  (let ((case (readtable-case *readtable*))
+        (token-buf *read-buffer*))
     (cond
      ((and (null escapes) (eq case :upcase))
-      ;; Pull the special variable access out of the loop.
-      (let ((buffer *read-buffer*))
-        (dotimes (i *ouch-ptr*)
+      (let ((buffer (token-buf-string token-buf)))
+        (dotimes (i (token-buf-fill-ptr token-buf))
           (declare (optimize (sb!c::insert-array-bounds-checks 0)))
           (setf (schar buffer i) (char-upcase (schar buffer i))))))
      ((eq case :preserve))
      (t
       (macrolet ((skip-esc (&body body)
-                   `(do ((i (1- *ouch-ptr*) (1- i))
-                         (buffer *read-buffer*)
+                   `(do ((i (1- (token-buf-fill-ptr token-buf)) (1- i))
+                         (buffer (token-buf-string token-buf))
                          (escapes escapes))
                         ((minusp i))
                       (declare (fixnum i)
@@ -959,7 +1047,25 @@ standard Lisp readtable when NIL."
                (cond (all-lower (raise-em))
                      (all-upper (lower-em))))))))))))
 
-(defvar *reader-package* nil)
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defvar *reader-package* nil))
+(declaim (type (or null package) *reader-package*)
+         (always-bound *reader-package*))
+
+(defun reader-find-package (package-designator stream)
+  (if (%instancep package-designator)
+      package-designator
+      (let ((package (find-package package-designator)))
+        (cond (package
+               ;; Release the token-buf that was used for the designator
+               (release-token-buf (shiftf (token-buf-next *read-buffer*) nil))
+               package)
+              (t
+               (error 'simple-reader-package-error
+                      :package package-designator
+                      :stream stream
+                      :format-control "Package ~A does not exist."
+                      :format-arguments (list package-designator)))))))
 
 (defun read-token (stream firstchar)
   #!+sb-doc
@@ -1090,15 +1196,13 @@ extended <package-name>::<form-in-package> syntax."
      MIDDLEDOT ; saw "[sign] {digit}+ dot"
       (ouch-read-buffer char)
       (setq char (read-char stream nil nil))
-      (unless char (return (let ((*read-base* 10))
-                             (make-integer))))
+      (unless char (return (make-integer 10)))
       (case (char-class char attribute-array attribute-hash-table)
         (#.+char-attr-constituent-digit+ (go RIGHTDIGIT))
         (#.+char-attr-constituent-expt+ (go EXPONENT))
         (#.+char-attr-delimiter+
          (unread-char char stream)
-         (return (let ((*read-base* 10))
-                   (make-integer))))
+         (return (make-integer 10)))
         (#.+char-attr-single-escape+ (go SINGLE-ESCAPE))
         (#.+char-attr-multiple-escape+ (go MULT-ESCAPE))
         (#.+char-attr-package-delimiter+ (go COLON))
@@ -1253,7 +1357,7 @@ extended <package-name>::<form-in-package> syntax."
       (let ((nextchar (read-char stream nil nil)))
         (unless nextchar
           (reader-eof-error stream "after single-escape character"))
-        (push *ouch-ptr* escapes)
+        (push (token-buf-fill-ptr *read-buffer*) escapes)
         (ouch-read-buffer nextchar))
       (setq char (read-char stream nil nil))
       (unless char (go RETURN-SYMBOL))
@@ -1268,7 +1372,7 @@ extended <package-name>::<form-in-package> syntax."
       (do ((char (read-char stream t) (read-char stream t)))
           ((multiple-escape-p char))
         (if (single-escape-p char) (setq char (read-char stream t)))
-        (push *ouch-ptr* escapes)
+        (push (token-buf-fill-ptr *read-buffer*) escapes)
         (ouch-read-buffer char))
       (setq char (read-char stream nil nil))
       (unless char (go RETURN-SYMBOL))
@@ -1283,19 +1387,13 @@ extended <package-name>::<form-in-package> syntax."
       (unless (zerop colons)
         (simple-reader-error stream
                              "too many colons in ~S"
-                             (read-buffer-to-string)))
+                             (copy-token-buf-string)))
       (setq colons 1)
       (setq package-designator
-            (if (plusp *ouch-ptr*)
-                ;; FIXME: It seems inefficient to cons up a package
-                ;; designator string every time we read a symbol with an
-                ;; explicit package prefix. Perhaps we could implement
-                ;; a FIND-PACKAGE* function analogous to INTERN*
-                ;; and friends?
-                (read-buffer-to-string)
-                (if seen-multiple-escapes
-                    (read-buffer-to-string)
-                    *keyword-package*)))
+            (if (or (plusp (token-buf-fill-ptr *read-buffer*))
+                    seen-multiple-escapes)
+                (share-token-buf-string)
+                *keyword-package*))
       (reset-read-buffer)
       (setq escapes ())
       (setq char (read-char stream nil nil))
@@ -1319,7 +1417,8 @@ extended <package-name>::<form-in-package> syntax."
         (#.+char-attr-delimiter+
          (unread-char char stream)
          (if package-designator
-             (let* ((*reader-package* (%find-package-or-lose package-designator)))
+             (let* ((*reader-package*
+                     (reader-find-package package-designator stream)))
                (return (read stream t nil t)))
              (simple-reader-error stream
                                   "illegal terminating character after a double-colon: ~S"
@@ -1333,30 +1432,28 @@ extended <package-name>::<form-in-package> syntax."
         (t (go SYMBOL)))
       RETURN-SYMBOL
       (casify-read-buffer escapes)
-      (let ((found (if package-designator
-                       (or (find-package package-designator)
-                           (error 'simple-reader-package-error
-                                  :package package-designator
-                                  :stream stream
-                                  :format-control "Package ~A does not exist."
-                                  :format-arguments (list package-designator)))
-                       (or *reader-package* (sane-package)))))
-        (if (or (zerop colons) (= colons 2) (eq found *keyword-package*))
-            (return (intern* *read-buffer* *ouch-ptr* found))
-            (multiple-value-bind (symbol test)
-                (find-symbol* *read-buffer* *ouch-ptr* found)
-              (when (eq test :external) (return symbol))
-              (let ((name (read-buffer-to-string)))
+      (let ((pkg (if package-designator
+                     (reader-find-package package-designator stream)
+                     (or *reader-package* (sane-package))))
+            (buf *read-buffer*))
+        (if (or (zerop colons) (= colons 2) (eq pkg *keyword-package*))
+            (return (intern* (token-buf-string buf) (token-buf-fill-ptr buf)
+                             pkg))
+            (multiple-value-bind (symbol accessibility)
+                (find-symbol* (token-buf-string buf) (token-buf-fill-ptr buf)
+                              pkg)
+              (when (eq accessibility :external) (return symbol))
+              (let ((name (copy-token-buf-string)))
                 (with-simple-restart (continue "Use symbol anyway.")
                   (error 'simple-reader-package-error
-                         :package found
+                         :package pkg
                          :stream stream
-                         :format-arguments (list name (package-name found))
+                         :format-arguments (list name (package-name pkg))
                          :format-control
-                         (if test
+                         (if accessibility
                              "The symbol ~S is not external in the ~A package."
                              "Symbol ~S not found in the ~A package.")))
-                (return (intern name found)))))))))
+                (return (intern name pkg)))))))))
 
 ;;; for semi-external use:
 ;;;
@@ -1369,7 +1466,7 @@ extended <package-name>::<form-in-package> syntax."
            (multiple-value-bind (escapes colon)
                (internal-read-extended-token stream first-char nil)
              (casify-read-buffer escapes)
-             (values (read-buffer-to-string) (not (null escapes)) colon)))
+             (values (copy-token-buf-string) (not (null escapes)) colon)))
           (t
            (values "" nil nil)))))
 
@@ -1382,89 +1479,86 @@ extended <package-name>::<form-in-package> syntax."
     (cond (first-char
             (let ((escapes (internal-read-extended-token stream first-char t)))
               (casify-read-buffer escapes)
-              (read-buffer-to-string)))
+              (copy-token-buf-string)))
           (t
             (reader-eof-error stream "after escape")))))
 
 ;;;; number-reading functions
 
-(defmacro digit* nil
-  `(do ((ch char (inch-read-buffer)))
-       ((or (eofp ch) (not (digit-char-p ch))) (setq char ch))
-     ;; Report if at least one digit is seen.
-     (setq one-digit t)))
+;; Mapping of read-base to the max input characters in a positive fixnum.
+(eval-when (:compile-toplevel :execute)
+  (defun integer-reader-safe-digits ()
+    (do ((a (make-array 35 :element-type '(unsigned-byte 8)))
+         (base 2 (1+ base)))
+        ((> base 36) a)
+      (do ((total (1- base) (+ (* total base) (1- base)))
+           (n-digits 0 (1+ n-digits)))
+          ((sb!xc:typep total 'bignum)
+           (setf (aref a (- base 2)) n-digits))
+        ;; empty DO body
+        )))
 
-;; FIXME: should just check for something like
-;;  (and (typep letter 'base-char) (... +char-attr-constituent-expt+))
-(defmacro exponent-letterp (letter)
-  `(memq ,letter '(#\E #\S #\F #\L #\D #\e #\s #\f #\l #\d)))
-
-;;; FIXME: It would be cleaner to have these generated automatically
-;;; by compile-time code instead of having them hand-created like
-;;; this. The !COLD-INIT-INTEGER-READER code below should be resurrected
-;;; and tested.
-(defvar *integer-reader-safe-digits*
-  #(nil nil
-    26 17 13 11 10 9 8 8 8 7 7 7 7 6 6 6 6 6 6 6 6 5 5 5 5 5 5 5 5 5 5 5 5 5 5)
-  #!+sb-doc
-  "the mapping of base to 'safe' number of digits to read for a fixnum")
-(defvar *integer-reader-base-power*
-  #(nil nil
-    67108864 129140163 67108864 48828125 60466176 40353607
-    16777216 43046721 100000000 19487171 35831808 62748517 105413504 11390625
-    16777216 24137569 34012224 47045881 64000000 85766121 113379904 6436343
-    7962624 9765625 11881376 14348907 17210368 20511149 24300000 28629151
-    33554432 39135393 45435424 52521875 60466176)
-  #!+sb-doc
-  "the largest fixnum power of the base for MAKE-INTEGER")
-(declaim (simple-vector *integer-reader-safe-digits*
-                        *integer-reader-base-power*))
-#|
-(defun !cold-init-integer-reader ()
-  (do ((base 2 (1+ base)))
+  ;; self-test
+  (do ((maxdigits (integer-reader-safe-digits))
+       (base 2 (1+ base)))
       ((> base 36))
-    (let ((digits
-          (do ((fix (truncate most-positive-fixnum base)
-                    (truncate fix base))
-               (digits 0 (1+ digits)))
-              ((zerop fix) digits))))
-      (setf (aref *integer-reader-safe-digits* base)
-            digits
-            (aref *integer-reader-base-power* base)
-            (expt base digits)))))
-|#
+    (let* ((n-digits (aref maxdigits (- base 2)))
+           (d (char (write-to-string (1- base) :base base) 0))
+           (string (make-string (1+ n-digits) :initial-element d))) ; 1 extra
+      (assert (not (typep (parse-integer string :radix base)
+                          `(unsigned-byte ,sb!vm:n-positive-fixnum-bits))))
+      (assert (typep (parse-integer string :end n-digits :radix base)
+                     `(unsigned-byte ,sb!vm:n-positive-fixnum-bits))))))
 
-(defun make-integer ()
+(defmacro !setq-optional-leading-sign (sign-flag token-buf rewind)
+  ;; guaranteed to have at least one character in buffer at the start
+  ;; or immediately following [ESFDL] marker depending on 'rewind' flag.
+  `(locally (declare (optimize (sb!c::insert-array-bounds-checks 0)))
+     (,(if rewind 'setf 'incf)
+       (token-buf-cursor ,token-buf)
+       (case (elt (token-buf-string ,token-buf)
+                  ,(if rewind 0 `(token-buf-cursor ,token-buf)))
+         (#\- (setq ,sign-flag t) 1)
+         (#\+ 1)
+         (t   0)))))
+
+(defun make-integer (&optional (base *read-base*))
   #!+sb-doc
   "Minimizes bignum-fixnum multiplies by reading a 'safe' number of digits,
   then multiplying by a power of the base and adding."
-  (let* ((base *read-base*)
-         (digits-per (aref *integer-reader-safe-digits* base))
-         (base-power (aref *integer-reader-base-power* base))
+  (declare ((integer 2 36) base)
+           (inline token-buf-getchar)) ; makes for smaller code
+  (let* ((fixnum-max-digits
+          (macrolet ((maxdigits () (integer-reader-safe-digits)))
+            (aref (maxdigits) (- base 2))))
+         (base-power
+          (macrolet ((base-powers ()
+                       (do ((maxdigits (integer-reader-safe-digits))
+                            (a (make-array 35))
+                            (base 2 (1+ base)))
+                           ((> base 36) a)
+                         (setf (aref a (- base 2))
+                               (expt base (aref maxdigits (- base 2)))))))
+            (truly-the integer (aref (base-powers) (- base 2)))))
          (negativep nil)
-         (number 0))
-    (declare (type index digits-per base-power))
-    (read-unwind-read-buffer)
-    (let ((char (inch-read-buffer)))
-      (cond ((char= char #\-)
-             (setq negativep t))
-            ((char= char #\+))
-            (t (unread-buffer))))
+         (result 0)
+         (buf *read-buffer*))
+    (!setq-optional-leading-sign negativep buf t)
     (loop
-     (let ((num 0))
-       (declare (type index num))
-       (dotimes (digit digits-per)
-         (let* ((ch (inch-read-buffer)))
-           (cond ((or (eofp ch) (char= ch #\.))
-                  (return-from make-integer
-                               (let ((res
-                                      (if (zerop number) num
-                                          (+ num (* number
-                                                    (expt base digit))))))
-                                 (if negativep (- res) res))))
-                 (t (setq num (+ (digit-char-p ch base)
-                                 (the index (* num base))))))))
-       (setq number (+ num (* number base-power)))))))
+     (let ((acc 0))
+       (declare (type (and fixnum unsigned-byte) acc))
+       (dotimes (digit-count fixnum-max-digits)
+         (let ((ch (token-buf-getchar buf)))
+           (if (or (not ch) (eql ch #\.))
+               (return-from make-integer
+                 (let ((result
+                        (if (zerop result) acc
+                            (+ (* result (expt base digit-count)) acc))))
+                   (if negativep (- result) result)))
+               (setq acc (truly-the fixnum
+                          (+ (digit-char-p ch base)
+                             (truly-the fixnum (* acc base))))))))
+       (setq result (+ (* result base-power) acc))))))
 
 (defun truncate-exponent (exponent number divisor)
   #!+sb-doc
@@ -1488,56 +1582,43 @@ extended <package-name>::<form-in-package> syntax."
 (defun make-float (stream)
   ;; Assume that the contents of *read-buffer* are a legal float, with nothing
   ;; else after it.
-  (read-unwind-read-buffer)
-  (let ((negative-fraction nil)
+  (let ((buf *read-buffer*)
+        (negative-fraction nil)
         (number 0)
         (divisor 1)
         (negative-exponent nil)
         (exponent 0)
         (float-char ())
-        (char (inch-read-buffer)))
-    (if (cond ((char= char #\+) t)
-              ((char= char #\-) (setq negative-fraction t)))
-        ;; Flush it.
-        (setq char (inch-read-buffer)))
+        char)
+    (!setq-optional-leading-sign negative-fraction buf t)
     ;; Read digits before the dot.
-    (do* ((ch char (inch-read-buffer))
-          (dig (digit-char-p ch) (digit-char-p ch)))
-         ((not dig) (setq char ch))
-      (setq number (+ (* number 10) dig)))
+    (macrolet ((accumulate (expr)
+                 `(let (digit)
+                    (loop (if (and (setq char (token-buf-getchar buf))
+                                   (setq digit (digit-char-p char)))
+                              ,expr
+                              (return))))))
+      (accumulate (setq number (+ (* number 10) digit)))
     ;; Deal with the dot, if it's there.
-    (when (char= char #\.)
-      (setq char (inch-read-buffer))
+      (when (char= char #\.)
       ;; Read digits after the dot.
-      (do* ((ch char (inch-read-buffer))
-            (dig (and (not (eofp ch)) (digit-char-p ch))
-                 (and (not (eofp ch)) (digit-char-p ch))))
-           ((not dig) (setq char ch))
-        (setq divisor (* divisor 10))
-        (setq number (+ (* number 10) dig))))
+        (accumulate (setq divisor (* divisor 10)
+                          number (+ (* number 10) digit))))
     ;; Is there an exponent letter?
-    (cond ((eofp char)
+      (cond
+          ((null char)
            ;; If not, we've read the whole number.
            (let ((num (make-float-aux number divisor
                                       *read-default-float-format*
                                       stream)))
              (return-from make-float (if negative-fraction (- num) num))))
-          ((exponent-letterp char)
+          ((= (get-constituent-trait char) +char-attr-constituent-expt+)
            (setq float-char char)
-           ;; Build exponent.
-           (setq char (inch-read-buffer))
            ;; Check leading sign.
-           (if (cond ((char= char #\+) t)
-                     ((char= char #\-) (setq negative-exponent t)))
-               ;; Flush sign.
-               (setq char (inch-read-buffer)))
+           (!setq-optional-leading-sign negative-exponent buf nil)
            ;; Read digits for exponent.
-           (do* ((ch char (inch-read-buffer))
-                 (dig (and (not (eofp ch)) (digit-char-p ch))
-                      (and (not (eofp ch)) (digit-char-p ch))))
-                ((not dig)
-                 (setq exponent (if negative-exponent (- exponent) exponent)))
-             (setq exponent (+ (* exponent 10) dig)))
+           (accumulate (setq exponent (+ (* exponent 10) digit)))
+           (setq exponent (if negative-exponent (- exponent) exponent))
            ;; Generate and return the float, depending on FLOAT-CHAR:
            (let* ((float-format (case (char-upcase float-char)
                                   (#\E *read-default-float-format*)
@@ -1550,7 +1631,7 @@ extended <package-name>::<form-in-package> syntax."
                                           divisor float-format stream)))
              (return-from make-float
                (if negative-fraction (- result) result))))
-          (t (bug "bad fallthrough in floating point reader")))))
+          (t (bug "bad fallthrough in floating point reader"))))))
 
 (defun make-float-aux (number divisor float-format stream)
   (handler-case
@@ -1559,39 +1640,34 @@ extended <package-name>::<form-in-package> syntax."
       (error 'reader-impossible-number-error
              :error c :stream stream
              :format-control "failed to build float from ~a"
-             :format-arguments (list (read-buffer-to-string))))))
+             :format-arguments (list (copy-token-buf-string))))))
 
 (defun make-ratio (stream)
   ;; Assume *READ-BUFFER* contains a legal ratio. Build the number from
   ;; the string.
+  ;; This code is inferior to that of MAKE-INTEGER because it makes no
+  ;; attempt to perform as few bignum multiplies as possible.
   ;;
-  ;; Look for optional "+" or "-".
-  (let ((numerator 0) (denominator 0) (char ()) (negative-number nil))
-    (read-unwind-read-buffer)
-    (setq char (inch-read-buffer))
-    (cond ((char= char #\+)
-           (setq char (inch-read-buffer)))
-          ((char= char #\-)
-           (setq char (inch-read-buffer))
-           (setq negative-number t)))
+  (let ((numerator 0) (denominator 0) (negativep nil)
+        (base *read-base*) (buf *read-buffer*))
+    (!setq-optional-leading-sign negativep buf t)
     ;; Get numerator.
-    (do* ((ch char (inch-read-buffer))
-          (dig (digit-char-p ch *read-base*)
-               (digit-char-p ch *read-base*)))
-         ((not dig))
-         (setq numerator (+ (* numerator *read-base*) dig)))
+    (loop (let ((dig (digit-char-p (token-buf-getchar buf) base)))
+            (if dig
+                (setq numerator (+ (* numerator base) dig))
+                (return))))
     ;; Get denominator.
-    (do* ((ch (inch-read-buffer) (inch-read-buffer))
+    (do* ((ch (token-buf-getchar buf) (token-buf-getchar buf))
           (dig ()))
-         ((or (eofp ch) (not (setq dig (digit-char-p ch *read-base*)))))
-         (setq denominator (+ (* denominator *read-base*) dig)))
+         ((or (null ch) (not (setq dig (digit-char-p ch base)))))
+         (setq denominator (+ (* denominator base) dig)))
     (let ((num (handler-case
                    (/ numerator denominator)
                  (arithmetic-error (c)
                    (error 'reader-impossible-number-error
                           :error c :stream stream
                           :format-control "failed to build ratio")))))
-      (if negative-number (- num) num))))
+      (if negativep (- num) num))))
 
 ;;;; General reader for dispatch macros
 
@@ -1761,9 +1837,7 @@ extended <package-name>::<form-in-package> syntax."
 
 (defun !reader-cold-init ()
   (!cold-init-constituent-trait-table)
-  (!cold-init-standard-readtable)
-  ;; FIXME: This was commented out, but should probably be restored.
-  #+nil (!cold-init-integer-reader))
+  (!cold-init-standard-readtable))
 
 (def!method print-object ((readtable readtable) stream)
   (print-unreadable-object (readtable stream :identity t :type t)))

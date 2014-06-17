@@ -224,6 +224,7 @@
  #!+mach  ("src/code/mach"     :not-host)
 
  ("src/code/common-os" :not-host)
+ #!+android ("src/code/android-os" :not-host)
  #!+mach  ("src/code/mach-os"  :not-host)
  #!+sunos ("src/code/sunos-os" :not-host)
  #!+hpux  ("src/code/hpux-os"  :not-host)
@@ -316,6 +317,7 @@
 
  ("src/compiler/macros")
  ("src/compiler/generic/vm-macs")
+ ("src/compiler/generic/objdef")
 
  ;; needed by "compiler/vop"
  ("src/compiler/sset")
@@ -460,7 +462,7 @@
  ("src/compiler/fndb")
  ("src/compiler/generic/vm-fndb")
 
- ("src/compiler/generic/objdef")
+ ("src/compiler/generic/late-objdef")
 
  ("src/compiler/generic/interr")
 

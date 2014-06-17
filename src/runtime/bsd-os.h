@@ -9,7 +9,7 @@
  * files for more information.
  */
 
-#if defined(__FreeBSD__) || defined(__DragonFly__)
+#if defined(LISP_FEATURE_FREEBSD)
 #include <osreldate.h>
 #endif
 
@@ -32,7 +32,7 @@ typedef vm_size_t os_vm_size_t;
 typedef off_t os_vm_offset_t;
 typedef int os_vm_prot_t;
 
-#if defined __FreeBSD__
+#if defined(LISP_FEATURE_FREEBSD)
 /* Note: The man page for sigaction(2) in FreeBSD 4.0 says that this
  * is an mcontext_t, but according to comments by Raymond Wiker in the
  * original FreeBSD port of SBCL, that's wrong, it's actually a
@@ -82,6 +82,8 @@ extern int openbsd_use_fxsave;
 #include <ucontext.h>
 typedef ucontext_t os_context_t;
 #define SIG_MEMORY_FAULT SIGSEGV
+
+#define SIG_STOP_FOR_GC (SIGUSR2)
 
 #elif defined LISP_FEATURE_DARWIN
 #include "darwin-os.h"

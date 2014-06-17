@@ -274,7 +274,7 @@ case `uname` in
         ;;
     *BSD)
         case `uname` in
-            FreeBSD)
+            *FreeBSD)
                 sbcl_os="freebsd"
                 ;;
             OpenBSD)
@@ -362,6 +362,7 @@ case `uname -m` in
     *ppc) guessed_sbcl_arch=ppc ;;
     ppc64) guessed_sbcl_arch=ppc ;;
     Power*Macintosh) guessed_sbcl_arch=ppc ;;
+    ibmnws) guessed_sbcl_arch=ppc ;;
     parisc) guessed_sbcl_arch=hppa ;;
     9000/800) guessed_sbcl_arch=hppa ;;
     mips*) guessed_sbcl_arch=mips ;;
@@ -692,7 +693,7 @@ elif [ "$sbcl_arch" = "hppa" ]; then
     printf ' :stack-allocatable-vectors :stack-allocatable-fixed-objects' >> $ltf
     printf ' :stack-allocatable-lists' >> $ltf
 elif [ "$sbcl_arch" = "arm" ]; then
-    printf ' :cheneygc :linkage-table :alien-callbacks' >> $ltf
+    printf ' :gencgc :linkage-table :alien-callbacks' >> $ltf
     # As opposed to soft-float or FPA, we support VFP only (and
     # possibly VFPv2 and higher only), but we'll leave the obvious
     # hooks in for someone to add the support later.

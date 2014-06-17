@@ -315,15 +315,15 @@
     (labels ((trivialp (value)
                (typep value
                       '(or
-                        #-sb-xc-host unboxed-array
-                        #+sb-xc-host (simple-array (unsigned-byte 8) (*))
+                        #-sb-xc-host
+                        (or unboxed-array #!+sb-simd-pack simd-pack)
+                        #+sb-xc-host
+                        (or (simple-array (unsigned-byte 8) (*))
+                            simple-bit-vector)
                         symbol
                         number
                         character
-                        string
-                        #!+sb-simd-pack
-                        #+sb-xc-host nil
-                        #-sb-xc-host simd-pack)))
+                        string))) ; subsumed by UNBOXED-ARRAY
              (grovel (value)
                ;; Unless VALUE is an object which which obviously
                ;; can't contain other objects
@@ -790,6 +790,12 @@
 (defun ir1-convert-global-functoid (start next result form fun)
   (declare (type ctran start next) (type (or lvar null) result)
            (list form))
+  (when (eql fun 'declare)
+    (compiler-error
+     "~@<There is no function named ~S.  ~
+      References to ~S in some contexts (like starts of blocks) are unevaluated ~
+      expressions, but here the expression is being evaluated, which invokes ~
+      undefined behaviour.~@:>" fun fun))
   ;; FIXME: Couldn't all the INFO calls here be converted into
   ;; standard CL functions, like MACRO-FUNCTION or something? And what
   ;; happens with lexically-defined (MACROLET) macros here, anyway?

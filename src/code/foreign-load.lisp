@@ -154,6 +154,8 @@ Experimental."
 (defun reopen-shared-objects ()
   ;; Ensure that the runtime is open
   (setf *runtime-dlhandle* (dlopen-or-lose))
+  ;; Without this many symbols aren't accessible.
+  #!+android (load-shared-object "libc.so" :dont-save t)
   ;; Reopen stuff.
   (setf *shared-objects*
         (remove nil (mapcar #'try-reopen-shared-object *shared-objects*))))
@@ -192,7 +194,7 @@ is never in the linkage-table."
               (remhash symbol symbols)
               (if datap
                   undefined-alien-address
-                  (foreign-symbol-address "undefined_alien_function")))
+                  (find-foreign-symbol-address "undefined_alien_function")))
              (addr
               (setf (gethash symbol symbols) t)
               (remhash symbol undefineds)

@@ -36,21 +36,25 @@
                  (symbol fdefn-or-symbol)
                  (fdefn (fdefn-name fdefn-or-symbol)))))
 
-#!+x86-64
+#!+(or arm x86-64)
 (deferr undefined-alien-fun-error (address)
   (error 'undefined-alien-function-error
          :name
          (and (integerp address)
               (sap-foreign-symbol (int-sap address)))))
 
-#!-x86-64
+#!-(or arm x86-64)
 (defun undefined-alien-fun-error ()
   (error 'undefined-alien-function-error))
 
-(deferr invalid-arg-count-error (nargs)
-  (error 'simple-program-error
-         :format-control "invalid number of arguments: ~S"
-         :format-arguments (list nargs)))
+(deferr invalid-arg-count-error (nargs &optional (fname nil fnamep))
+  (if fnamep
+      (error 'simple-program-error
+         :format-control "~S called with invalid number of arguments: ~S"
+         :format-arguments (list fname nargs))
+      (error 'simple-program-error
+             :format-control "invalid number of arguments: ~S"
+             :format-arguments (list nargs))))
 
 (deferr bogus-arg-to-values-list-error (list)
   (error 'simple-type-error
@@ -197,6 +201,17 @@
         nil))))
 
 
+;;; Returns true if number of arguments matches required/optional
+;;; arguments handler expects.
+(defun internal-error-args-ok (arguments handler)
+  (multiple-value-bind (req opt)
+      (parse-lambda-list (%simple-fun-arglist handler) :silent t)
+    ;; The handler always gets name as the first (extra) argument.
+    (let ((n (1+ (length arguments)))
+          (n-req (length req))
+          (n-opt (length opt)))
+      (and (>= n n-req) (<= n (+ n-req n-opt))))))
+
 ;;;; INTERNAL-ERROR signal handler
 
 (defun internal-error (context continuable)
@@ -242,8 +257,7 @@
                  (handler (and (< -1 error-number (length *internal-errors*))
                                (svref *internal-errors* error-number))))
              (cond ((and (functionp handler)
-                         (eql (1- (length (%simple-fun-arglist handler)))
-                              (length arguments)))
+                         (internal-error-args-ok arguments handler))
                     (macrolet ((arg (n)
                                  `(sb!di::sub-access-debug-var-slot
                                    fp (nth ,n arguments) alien-context)))

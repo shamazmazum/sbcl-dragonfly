@@ -498,6 +498,7 @@
   (call)
 ; :DERIVE-TYPE 'TYPE-SPEC-ARG1 ? Nope... (MAP NIL ...) returns NULL, not NIL.
   )
+(defknown %map-for-effect-arity-1 (callable sequence) null (call))
 (defknown %map-to-list-arity-1 (callable sequence) list (flushable call))
 (defknown %map-to-simple-vector-arity-1 (callable sequence) simple-vector
   (flushable call))
@@ -765,8 +766,6 @@
 ;;; express that in this syntax. The result must be LIST, but we do
 ;;; not check it now :-).
 (defknown nconc (&rest t) t ()
-  :destroyed-constant-args (remove-non-constants-and-nils #'butlast))
-(defknown sb!impl::nconc2 (list t) t ()
   :destroyed-constant-args (remove-non-constants-and-nils #'butlast))
 
 (defknown nreconc (list t) t (important-result)
@@ -1374,6 +1373,8 @@
 ;;; and analogous SBCL extension:
 (defknown sb!impl::%failed-aver (t) nil)
 (defknown bug (t &rest t) nil) ; never returns
+(defknown sb!int:simple-reader-error (stream string &rest t) nil)
+(defknown sb!kernel:reader-eof-error (stream string) nil)
 
 
 ;;;; from the "Miscellaneous" Chapter:
@@ -1519,7 +1520,7 @@
 (defknown %more-kw-arg (t fixnum) (values t t))
 (defknown %more-arg-values (t index index) * (flushable))
 (defknown %verify-arg-count (index index) (values))
-(defknown %arg-count-error (t) nil)
+(defknown %arg-count-error (t t) nil)
 (defknown %unknown-values () *)
 (defknown %catch (t t) t)
 (defknown %unwind-protect (t t) t)
@@ -1553,6 +1554,8 @@
   (foldable unsafely-flushable explicit-check always-translatable))
 (defknown data-vector-ref-with-offset (simple-array fixnum fixnum) t
   (foldable unsafely-flushable explicit-check always-translatable))
+(defknown data-nil-vector-ref (simple-array index) nil
+  (explicit-check always-translatable))
 (defknown data-vector-set (array index t) t
   (explicit-check always-translatable))
 (defknown data-vector-set-with-offset (array fixnum fixnum t) t
@@ -1655,14 +1658,6 @@
 (defknown %check-vector-sequence-bounds (vector index sequence-end)
   index
   (unwind))
-;;; FIXME: including this information here is probably necessary to
-;;; get efficient compilation of the inline expansion of
-;;; %FIND-POSITION-IF, so it should maybe be in a more
-;;; compiler-friendly package (SB-INT?)
-(defknown sb!impl::signal-bounding-indices-bad-error
-    (sequence index sequence-end)
-  nil) ; never returns
-
 
 (defknown arg-count-error (t t t t t t) nil ())
 

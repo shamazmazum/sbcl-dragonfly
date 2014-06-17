@@ -1386,7 +1386,7 @@
                 (:generator 1000
                   (error-call vop ',error ,@args)))))
   (def arg-count-error invalid-arg-count-error
-    sb!c::%arg-count-error nargs)
+    sb!c::%arg-count-error nargs fname)
   (def type-check-error object-not-type-error sb!c::%type-check-error
     object type)
   (def layout-invalid-error layout-invalid-error sb!c::%layout-invalid-error
@@ -1396,6 +1396,39 @@
   (def unknown-key-arg-error unknown-key-arg-error
     sb!c::%unknown-key-arg-error key)
   (def nil-fun-returned-error nil-fun-returned-error nil fun))
+
+;; Signal an error about an untagged number.
+;; These are pretty much boilerplate and could be generic except:
+;; - the names of the SCs could differ between backends (or maybe not?)
+;; - in the "/c" case, the older backends don't eval the errcode
+;; And the 6 vops above ought to be generic too...
+;; FIXME: there are still some occurrences of
+;;  note: doing signed word to integer coercion
+;; in regard to SB-C::%TYPE-CHECK-ERROR. Figure out why.
+(define-vop (type-check-error/word)
+  (:policy :fast-safe)
+  (:translate sb!c::%type-check-error)
+  (:args (object :scs (signed-reg unsigned-reg))
+         ;; Types are trees of symbols, so 'any-reg' is not
+         ;; really possible.
+         (type :scs (any-reg descriptor-reg)))
+  (:arg-types untagged-num *)
+  (:vop-var vop)
+  (:save-p :compute-only)
+  ;; cost is a smidgen less than type-check-error
+  ;; otherwise this does not get selected.
+  (:generator 999
+    (error-call vop 'object-not-type-error object type)))
+(define-vop (type-check-error/word/c)
+  (:policy :fast-safe)
+  (:translate sb!c::%type-check-error/c)
+  (:args (object :scs (signed-reg unsigned-reg)))
+  (:arg-types untagged-num (:constant symbol))
+  (:info errcode)
+  (:vop-var vop)
+  (:save-p :compute-only)
+  (:generator 899 ; smidgen less than type-check-error/c
+    (error-call vop errcode object)))
 
 ;;; Single-stepping
 

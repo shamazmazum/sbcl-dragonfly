@@ -820,6 +820,10 @@
                   (:big-endian (octet-swap i bits)))
                 bytes file))))
     (etypecase vector
+      ((simple-bit-vector 0)
+       ;; NIL bits+bytes are ok- DUMP-INTEGER-AS-N-BYTES is unreachable.
+       ;; Otherwise we'd need to fill up octets using an ash/logior loop.
+       (dump-unsigned-vector sb!vm:simple-bit-vector-widetag nil nil))
       ((simple-array (unsigned-byte 8) (*))
        (dump-unsigned-vector sb!vm:simple-array-unsigned-byte-8-widetag 1 8))
       ((simple-array (unsigned-byte 16) (*))
@@ -829,9 +833,9 @@
 
 #-sb-xc-host
 (defun dump-specialized-vector (vector file &key data-only)
-  (declare (type (simple-array * (*)) vector))
+  (declare (type (simple-unboxed-array (*)) vector))
   (let* ((length (length vector))
-         (widetag (widetag-of vector))
+         (widetag (%other-pointer-widetag vector))
          (bits-per-length (aref **saetp-bits-per-length** widetag)))
     (aver (< bits-per-length 255))
     (unless data-only
