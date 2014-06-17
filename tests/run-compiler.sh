@@ -38,7 +38,7 @@ while [ $# -gt 0 ]; do
                 SunOS-X86)       new=-fPIC ;;
                 SunOS-X86-64)    new=-fPIC ;;
                 DragonFly-X86-64)new=-fPIC ;;
-                DragonFly-X84)   new=-fPIC ;;
+                DragonFly-X86)   new=-fPIC ;;
             esac
             ;;
 
