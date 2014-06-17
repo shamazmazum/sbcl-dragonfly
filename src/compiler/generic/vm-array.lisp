@@ -30,7 +30,7 @@
   (specifier (missing-arg) :type type-specifier :read-only t)
   ;; the element type, e.g. #<BUILT-IN-CLASS BASE-CHAR (sealed)> or
   ;; #<SB-KERNEL:NUMERIC-TYPE (UNSIGNED-BYTE 4)>
-  (ctype nil :type (or ctype null))
+  (ctype nil #-clisp :type #-clisp (or ctype null))
   ;; true if the elements are tagged fixnums
   (fixnum-p nil :type boolean :read-only t)
   ;; what we get when the low-level vector-creation logic zeroes all
