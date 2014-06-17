@@ -117,7 +117,7 @@ os_context_sigmask_addr(os_context_t *context)
      * signal mask field is a field of the basic, outermost context
      * struct itself both in FreeBSD 4.0 and in OpenBSD 2.6.) */
 #if defined(LISP_FEATURE_FREEBSD) || defined(__NetBSD__) || defined(LISP_FEATURE_DARWIN) \
-    || defined(_DragonFly_)
+    || defined(__DragonFly__)
     return &context->uc_sigmask;
 #elif defined (__OpenBSD__)
     return &context->sc_mask;
