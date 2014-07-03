@@ -509,7 +509,7 @@ static void dragonfly_init()
 #ifdef LISP_FEATURE_X86
     size_t len;
     int instruction_sse;
-    
+
     len = sizeof(instruction_sse);
     if (sysctlbyname("hw.instruction_sse", &instruction_sse, &len,
                      NULL, 0) == 0 && instruction_sse != 0) {

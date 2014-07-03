@@ -270,6 +270,19 @@
 ;;; shared, we copy it. We don't have to copy the lists, since each
 ;;; function that has generators or transforms has already been
 ;;; through here.
+;;;
+;;; Note that this operation is somewhat garbage-producing in the current
+;;; globaldb implementation.  Setting a piece of INFO for a name makes
+;;; a shallow copy of the name's info-vector. FUN-INFO-OR-LOSE sounds
+;;; like a data reader, and you might be disinclined to think that it
+;;; copies at all, but:
+;;;   (TIME (LOOP REPEAT 1000 COUNT (FUN-INFO-OR-LOSE '*)))
+;;;   294,160 bytes consed
+;;; whereas just copying the info per se is not half as bad:
+;;;   (LET ((X (INFO :FUNCTION :INFO '*)))
+;;;     (TIME (LOOP REPEAT 1000 COUNT (COPY-FUN-INFO X))))
+;;;   130,992 bytes consed
+;;;
 (declaim (ftype (sfunction (t) fun-info) fun-info-or-lose))
 (defun fun-info-or-lose (name)
     (let ((old (info :function :info name)))
@@ -401,5 +414,27 @@
                           (typep value '(vector * 0)))
                 (push (car list) result))))
           (setf indices (cdr indices)))))))
+
+(defun read-elt-type-deriver (skip-arg-p element-type-spec no-hang)
+  (lambda (call)
+    (let* ((element-type (specifier-type element-type-spec))
+           (null-type (specifier-type 'null))
+           (err-args (if skip-arg-p ; for PEEK-CHAR, skip 'peek-type' + 'stream'
+                         (cddr (combination-args call))
+                         (cdr (combination-args call)))) ; else just 'stream'
+           (eof-error-p (first err-args))
+           (eof-value (second err-args))
+           (unexceptional-type ; the normally returned thing
+            (if (and eof-error-p
+                     (types-equal-or-intersect (lvar-type eof-error-p)
+                                               null-type))
+                ;; (READ-elt stream nil <x>) returns (OR (EQL <x>) elt-type)
+                (type-union (if eof-value (lvar-type eof-value) null-type)
+                            element-type)
+                ;; If eof-error is unsupplied, or was but couldn't be nil
+                element-type)))
+      (if no-hang
+          (type-union unexceptional-type null-type)
+          unexceptional-type))))
 
 (/show0 "knownfun.lisp end of file")

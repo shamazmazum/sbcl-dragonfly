@@ -573,11 +573,7 @@
             exact)))
 
 ;;; If TYPE isn't a values type, then make it into one.
-(defun-cached (%coerce-to-values
-               :hash-bits 8
-               :hash-function (lambda (type)
-                                (logand (type-hash-value type)
-                                        #xff)))
+(defun-cached (%coerce-to-values :hash-bits 8 :hash-function #'type-hash-value)
     ((type eq))
   (cond ((multiple-value-bind (res sure)
              (csubtypep (specifier-type 'null) type)
@@ -705,7 +701,7 @@
 ;;;
 ;;; The return convention seems to be analogous to
 ;;; TYPES-EQUAL-OR-INTERSECT. -- WHN 19990910.
-(defun-cached (values-type-union :hash-function type-cache-hash
+(defun-cached (values-type-union :hash-function #'type-cache-hash
                                  :hash-bits 8
                                  :default nil
                                  :init-wrapper !cold-init-forms)
@@ -717,7 +713,7 @@
         (t
          (values (values-type-op type1 type2 #'type-union #'min)))))
 
-(defun-cached (values-type-intersection :hash-function type-cache-hash
+(defun-cached (values-type-intersection :hash-function #'type-cache-hash
                                         :hash-bits 8
                                         :default (values nil)
                                         :init-wrapper !cold-init-forms)
@@ -758,7 +754,7 @@
 
 ;;; a SUBTYPEP-like operation that can be used on any types, including
 ;;; VALUES types
-(defun-cached (values-subtypep :hash-function type-cache-hash
+(defun-cached (values-subtypep :hash-function #'type-cache-hash
                                :hash-bits 8
                                :values 2
                                :default (values nil :empty)
@@ -800,8 +796,9 @@
 ;;;; type method interfaces
 
 ;;; like SUBTYPEP, only works on CTYPE structures
-(defun-cached (csubtypep :hash-function type-cache-hash
-                         :hash-bits 8
+(defun-cached (csubtypep :hash-function #'type-cache-hash
+                         :hash-bits 10
+                         :memoizer memoize
                          :values 2
                          :default (values nil :empty)
                          :init-wrapper !cold-init-forms)
@@ -815,9 +812,10 @@
         ((eq type1 *universal-type*)
          (values nil t))
         (t
-         (!invoke-type-method :simple-subtypep :complex-subtypep-arg2
-                              type1 type2
-                              :complex-arg1 :complex-subtypep-arg1))))
+         (memoize
+          (!invoke-type-method :simple-subtypep :complex-subtypep-arg2
+                               type1 type2
+                               :complex-arg1 :complex-subtypep-arg1)))))
 
 ;;; Just parse the type specifiers and call CSUBTYPE.
 (defun sb!xc:subtypep (type1 type2 &optional environment)
@@ -832,8 +830,9 @@
 ;;; If two types are definitely equivalent, return true. The second
 ;;; value indicates whether the first value is definitely correct.
 ;;; This should only fail in the presence of HAIRY types.
-(defun-cached (type= :hash-function type-cache-hash
-                     :hash-bits 8
+(defun-cached (type= :hash-function #'type-cache-hash
+                     :hash-bits 11
+                     :memoizer memoize
                      :values 2
                      :default (values nil :empty)
                      :init-wrapper !cold-init-forms)
@@ -841,7 +840,7 @@
   (declare (type ctype type1 type2))
   (if (eq type1 type2)
       (values t t)
-      (!invoke-type-method :simple-= :complex-= type1 type2)))
+      (memoize (!invoke-type-method :simple-= :complex-= type1 type2))))
 
 ;;; Not exactly the negation of TYPE=, since when the relationship is
 ;;; uncertain, we still return NIL, NIL. This is useful in cases where
@@ -874,8 +873,9 @@
 ;;; that is precise to the best of our knowledge. This result is
 ;;; simplified into the canonical form, thus is not a UNION-TYPE
 ;;; unless we find no other way to represent the result.
-(defun-cached (type-union2 :hash-function type-cache-hash
+(defun-cached (type-union2 :hash-function #'type-cache-hash
                            :hash-bits 8
+                           :memoizer memoize
                            :init-wrapper !cold-init-forms)
               ((type1 eq) (type2 eq))
   ;; KLUDGE: This was generated from TYPE-INTERSECTION2 by Ye Olde Cut And
@@ -884,8 +884,10 @@
   ;; should probably become shared code. -- WHN 2001-03-16
   (declare (type ctype type1 type2))
   (let ((t2 nil))
-    (cond ((eq type1 type2)
-           type1)
+    (if (eq type1 type2)
+        type1
+        (memoize
+         (cond
           ;; CSUBTYPEP for array-types answers questions about the
           ;; specialized type, yet for union we want to take the
           ;; expressed type in account too.
@@ -901,7 +903,7 @@
           (type-union type1 type2))
          (t
           ;; the ordinary case: we dispatch to type methods
-          (%type-union2 type1 type2)))))
+          (%type-union2 type1 type2)))))))
 
 ;;; the type method dispatch case of TYPE-INTERSECTION2
 (defun %type-intersection2 (type1 type2)
@@ -936,18 +938,21 @@
                       (t
                        nil))))))))
 
-(defun-cached (type-intersection2 :hash-function type-cache-hash
-                                  :hash-bits 8
+(defun-cached (type-intersection2 :hash-function #'type-cache-hash
+                                  :hash-bits 9
+                                  :memoizer memoize
                                   :values 1
                                   :default nil
                                   :init-wrapper !cold-init-forms)
               ((type1 eq) (type2 eq))
   (declare (type ctype type1 type2))
-  (cond ((eq type1 type2)
+  (if (eq type1 type2)
          ;; FIXME: For some reason, this doesn't catch e.g. type1 =
          ;; type2 = (SPECIFIER-TYPE
          ;; 'SOME-UNKNOWN-TYPE). Investigate. - CSR, 2002-04-10
-         type1)
+      type1
+      (memoize
+       (cond
         ((or (intersection-type-p type1)
              (intersection-type-p type2))
          ;; Intersections of INTERSECTION-TYPE should have the
@@ -957,7 +962,7 @@
          (type-intersection type1 type2))
         (t
          ;; the ordinary case: we dispatch to type methods
-         (%type-intersection2 type1 type2))))
+         (%type-intersection2 type1 type2))))))
 
 ;;; Return as restrictive and simple a type as we can discover that is
 ;;; no more restrictive than the intersection of TYPE1 and TYPE2. At
@@ -995,9 +1000,7 @@
   (declare (type ctype type))
   (funcall (type-class-unparse (type-class-info type)) type))
 
-(defun-cached (type-negation :hash-function (lambda (type)
-                                              (logand (type-hash-value type)
-                                                      #xff))
+(defun-cached (type-negation :hash-function #'type-hash-value
                              :hash-bits 8
                              :values 1
                              :default nil
@@ -1006,9 +1009,7 @@
   (declare (type ctype type))
   (funcall (type-class-negate (type-class-info type)) type))
 
-(defun-cached (type-singleton-p :hash-function (lambda (type)
-                                              (logand (type-hash-value type)
-                                                      #xff))
+(defun-cached (type-singleton-p :hash-function #'type-hash-value
                              :hash-bits 8
                              :values 2
                              :default (values nil t)
@@ -1082,9 +1083,7 @@
 
 (defun type-intersection (&rest input-types)
   (%type-intersection input-types))
-(defun-cached (%type-intersection :hash-bits 8
-                                  :hash-function (lambda (x)
-                                                   (logand (sxhash x) #xff)))
+(defun-cached (%type-intersection :hash-bits 8 :hash-function #'sxhash)
     ((input-types equal))
   (let ((simplified-types (simplify-intersections input-types)))
     (declare (type list simplified-types))
@@ -1117,9 +1116,7 @@
 
 (defun type-union (&rest input-types)
   (%type-union input-types))
-(defun-cached (%type-union :hash-bits 8
-                           :hash-function (lambda (x)
-                                            (logand (sxhash x) #xff)))
+(defun-cached (%type-union :hash-bits 8 :hash-function #'sxhash)
     ((input-types equal))
   (let ((simplified-types (simplify-unions input-types)))
     (cond
@@ -1147,6 +1144,8 @@
    (frob * *wild-type*)
    (frob nil *empty-type*)
    (frob t *universal-type*)
+   (setf (sb!c::type-info-default (sb!c::type-info-or-lose :variable :type))
+         *universal-type*)
    ;; new in sbcl-0.9.5: these used to be CLASSOID types, but that
    ;; view of them was incompatible with requirements on the MOP
    ;; metaobject class hierarchy: the INSTANCE and

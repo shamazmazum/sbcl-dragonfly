@@ -529,7 +529,7 @@
 ;;;   The size of the cache as a power of 2.
 ;;; :HASH-FUNCTION function
 ;;;   Some thing that can be placed in CAR position which will compute
-;;;   a value between 0 and (1- (expt 2 <hash-bits>)).
+;;;   a fixnum with at least (* 2 <hash-bits>) of information in it.
 ;;; :VALUES <n>
 ;;;   the number of return values cached for each function call
 ;;; :INIT-WRAPPER <name>
@@ -543,24 +543,24 @@
   (dolist (name *cache-vector-symbols*)
     (set name nil)))
 
-(defmacro define-hash-cache (name args &key hash-function hash-bits default
+(defmacro define-hash-cache (name args
+                             &key hash-function hash-bits memoizer default
                                   (init-wrapper 'progn)
                                   (values 1))
+  (declare (ignore memoizer))
   (let* ((var-name (symbolicate "**" name "-CACHE-VECTOR**"))
-         (probes-name (when *profile-hash-cache*
-                       (symbolicate "**" name "-CACHE-PROBES**")))
-         (misses-name (when *profile-hash-cache*
-                      (symbolicate "**" name "-CACHE-MISSES**")))
+         (statistics-name (when *profile-hash-cache*
+                            (symbolicate "**" name "-CACHE-STATISTICS**")))
          (nargs (length args))
          (size (ash 1 hash-bits))
          (default-values (if (and (consp default) (eq (car default) 'values))
                              (cdr default)
                              (list default)))
          (args-and-values (sb!xc:gensym "ARGS-AND-VALUES"))
-         (args-and-values-size (+ nargs values))
          (n-index (sb!xc:gensym "INDEX"))
          (n-cache (sb!xc:gensym "CACHE")))
-    (declare (ignorable probes-name misses-name))
+    (declare (ignorable statistics-name))
+    (assert (typep hash-bits '(integer 5 14))) ; reasonable bounds
     (unless (= (length default-values) values)
       (error "The number of default values ~S differs from :VALUES ~W."
              default values))
@@ -568,7 +568,6 @@
     (collect ((inlines)
               (forms)
               (inits)
-              (sets)
               (tests)
               (arg-vars)
               (values-refs)
@@ -576,8 +575,7 @@
       (dotimes (i values)
         (let ((name (sb!xc:gensym "VALUE")))
           (values-names name)
-          (values-refs `(svref ,args-and-values (+ ,nargs ,i)))
-          (sets `(setf (svref ,args-and-values (+ ,nargs ,i)) ,name))))
+          (values-refs `(svref ,args-and-values (+ ,nargs ,i)))))
       (let ((n 0))
         (dolist (arg args)
           (unless (= (length arg) 2)
@@ -585,44 +583,63 @@
           (let ((arg-name (first arg))
                 (test (second arg)))
             (arg-vars arg-name)
-            (tests `(,test (svref ,args-and-values ,n) ,arg-name))
-            (sets `(setf (svref ,args-and-values ,n) ,arg-name)))
+            (tests `(,test (svref ,args-and-values ,n) ,arg-name)))
           (incf n)))
 
       (when *profile-hash-cache*
-        (inits `(setq ,probes-name 0))
-        (inits `(setq ,misses-name 0))
-        (forms `(declaim (fixnum ,probes-name ,misses-name))))
+        (inits `(setq ,statistics-name (make-array 3 :element-type 'fixnum)))
+        (forms `(declaim (type (simple-array fixnum (3)) ,statistics-name))))
 
       (let ((fun-name (symbolicate name "-CACHE-LOOKUP")))
         (inlines fun-name)
         (forms
          `(defun ,fun-name ,(arg-vars)
             ,@(when *profile-hash-cache*
-                `((incf ,probes-name)))
+                `((incf (aref ,statistics-name 0))))
             (flet ((miss ()
                      ,@(when *profile-hash-cache*
-                         `((incf ,misses-name)))
-                     (return-from ,fun-name ,default)))
-              (let* ((,n-index (,hash-function ,@(arg-vars)))
-                     (,n-cache (or ,var-name (miss)))
-                     (,args-and-values (svref ,n-cache ,n-index)))
-                (cond ((and (not (eql 0 ,args-and-values))
-                            ,@(tests))
-                       (values ,@(values-refs)))
-                      (t
-                       (miss))))))))
+                         `((incf (aref ,statistics-name 1))))
+                     (return-from ,fun-name ,default))
+                   (try (,args-and-values)
+                     (if (and (not (eql 0 ,args-and-values))
+                              ,@(tests))
+                         (return-from ,fun-name
+                           (values ,@(values-refs))))))
+              (let ((,n-cache (or ,var-name (miss)))
+                    (,n-index (funcall ,hash-function ,@(arg-vars))))
+                ;; The matching entry might be in either index.
+                ;; Replacement picks one at random if both choices were taken.
+                (try (svref ,n-cache (ldb (byte ,hash-bits 0) ,n-index)))
+                (try (svref ,n-cache (ldb (byte ,hash-bits ,hash-bits)
+                                          ,n-index)))
+                (miss))))))
 
       (let ((fun-name (symbolicate name "-CACHE-ENTER")))
         (inlines fun-name)
         (forms
          `(defun ,fun-name (,@(arg-vars) ,@(values-names))
-            (let ((,n-index (,hash-function ,@(arg-vars)))
+            (let ((,n-index (funcall ,hash-function ,@(arg-vars)))
                   (,n-cache (or ,var-name
                                 (setq ,var-name (make-array ,size :initial-element 0))))
-                  (,args-and-values (make-array ,args-and-values-size)))
-              ,@(sets)
-              (setf (svref ,n-cache ,n-index) ,args-and-values))
+                  ;; TODO: 1-arg/1-result should use CONS instead of VECTOR.
+                  (,args-and-values (vector ,@(arg-vars) ,@(values-names))))
+              (let ((idx1 (ldb (byte ,hash-bits 0) ,n-index))
+                    (idx2 (ldb (byte ,hash-bits ,hash-bits) ,n-index)))
+                (cond ((eql (svref ,n-cache idx1) 0)
+                       (setf (svref ,n-cache idx1) ,args-and-values))
+                      ((eql (svref ,n-cache idx2) 0)
+                       (setf (svref ,n-cache idx2) ,args-and-values))
+                      (t
+                       ,@(when *profile-hash-cache* ; tally up the evictions
+                           `((incf (aref ,statistics-name 2))))
+                       ;; Use one bit of randomness to pick a victim.
+                       (setf (svref ,n-cache
+                                    (if #-sb-xc-host
+                                        (logbitp 4 (sb!kernel:get-lisp-obj-address
+                                                    ,(car (arg-vars))))
+                                        #+sb-xc-host (zerop (random 2))
+                                        idx1 idx2))
+                             ,args-and-values)))))
             (values))))
 
       (let ((fun-name (symbolicate name "-CACHE-CLEAR")))
@@ -638,8 +655,8 @@
          (pushnew ',var-name *cache-vector-symbols*)
          (defglobal ,var-name nil)
          ,@(when *profile-hash-cache*
-             `((defglobal ,probes-name 0)
-               (defglobal ,misses-name 0)))
+             `((defglobal ,statistics-name
+                   (make-array 3 :element-type 'fixnum))))
          (declaim (type (or null (simple-vector ,size)) ,var-name))
          #!-sb-fluid (declaim (inline ,@(inlines)))
          (,init-wrapper ,@(inits))
@@ -648,7 +665,20 @@
 
 ;;; some syntactic sugar for defining a function whose values are
 ;;; cached by DEFINE-HASH-CACHE
+;;; These keywords are mostly defined at DEFINE-HASH-CACHE.
+;;; Additional options:
+;;; :MEMOIZER <name>
+;;;   If provided, it is the name of a local macro that must be called
+;;;   within the body forms to perform cache lookup/insertion.
+;;;   If not provided, then the function's behavior is to automatically
+;;;   attempt cache lookup, and on miss, execute the body code and
+;;;   insert into the cache.
+;;;   Manual control over memoization is useful if there are cases for
+;;;   which computing the result is simpler than cache lookup.
+
 (defmacro defun-cached ((name &rest options &key (values 1) default
+                              (memoizer (make-symbol "MEMOIZE")
+                                        memoizer-supplied-p)
                               &allow-other-keys)
                         args &body body-decls-doc)
   (let ((default-values (if (and (consp default) (eq (car default) 'values))
@@ -656,13 +686,15 @@
                             (list default)))
         (arg-names (mapcar #'car args))
         (values-names (make-gensym-list values)))
+    ;; What I wouldn't give to be able to use BINDING*, right?
     (multiple-value-bind (body decls doc) (parse-body body-decls-doc)
       `(progn
         (define-hash-cache ,name ,args ,@options)
         (defun ,name ,arg-names
           ,@decls
-          ,doc
-          (cond #!+sb-show
+          ,@(if doc (list doc))
+          (macrolet ((,memoizer (&body body)
+            `(cond #!+sb-show
                 ((not (boundp '*hash-caches-initialized-p*))
                  ;; This shouldn't happen, but it did happen to me
                  ;; when revising the type system, and it's a lot
@@ -677,25 +709,24 @@
                  (/hexstr ,(first arg-names))
                  ,@body)
                 (t
-                 (multiple-value-bind ,values-names
-                     (,(symbolicate name "-CACHE-LOOKUP") ,@arg-names)
-                   (if (and ,@(mapcar (lambda (val def)
-                                        `(eq ,val ,def))
-                                      values-names default-values))
-                       (multiple-value-bind ,values-names
-                           (progn ,@body)
-                         (,(symbolicate name "-CACHE-ENTER") ,@arg-names
-                           ,@values-names)
-                         (values ,@values-names))
-                       (values ,@values-names))))))))))
+                 (multiple-value-bind ,',values-names
+                     ,'(,(symbolicate name "-CACHE-LOOKUP") ,@arg-names)
+                   (if ,'(and ,@(mapcar (lambda (val def) `(eq ,val ,def))
+                                 values-names default-values))
+                       (multiple-value-bind ,',values-names (progn ,@body)
+                         ,'(,(symbolicate name "-CACHE-ENTER") ,@arg-names
+                            ,@values-names)
+                         (values ,@',values-names))
+                       (values ,@',values-names)))))))
+             ,@(if memoizer-supplied-p
+                   body
+                   `((,memoizer ,@body)))))))))
 
 (defmacro define-cached-synonym
     (name &optional (original (symbolicate "%" name)))
   (let ((cached-name (symbolicate "%%" name "-CACHED")))
     `(progn
-       (defun-cached (,cached-name :hash-bits 8
-                                   :hash-function (lambda (x)
-                                                    (logand (sxhash x) #xff)))
+       (defun-cached (,cached-name :hash-bits 8 :hash-function #'sxhash)
            ((args equal))
          (apply #',original args))
        (defun ,name (&rest args)
@@ -1241,6 +1272,50 @@
                (let ((it ,test)) (declare (ignorable it)),@body)
                (acond ,@rest))))))
 
+;; Given DECLS as returned by from parse-body, and SYMBOLS to be bound
+;; (with LET, MULTIPLE-VALUE-BIND, etc) return two sets of declarations:
+;; those which pertain to the variables and those which don't.
+(defun extract-var-decls (decls symbols)
+  (labels ((applies-to-variables (decl)
+             (let ((id (car decl)))
+               (remove-if (lambda (x) (not (memq x symbols)))
+                          (cond ((eq id 'type)
+                                 (cddr decl))
+                                ((or (listp id) ; must be a type-specifier
+                                     (memq id '(special ignorable ignore
+                                                dynamic-extent
+                                                truly-dynamic-extent))
+                                     (info :type :kind id))
+                                 (cdr decl))))))
+           (partition (spec)
+             (let ((variables (applies-to-variables spec)))
+               (cond ((not variables)
+                      (values nil spec))
+                     ((eq (car spec) 'type)
+                      (let ((more (set-difference (cddr spec) variables)))
+                        (values `(type ,(cadr spec) ,@variables)
+                                (if more `(type ,(cadr spec) ,@more)))))
+                     (t
+                      (let ((more (set-difference (cdr spec) variables)))
+                        (values `(,(car spec) ,@variables)
+                                (if more `(,(car spec) ,@more)))))))))
+    ;; This loop is less inefficient than theoretically possible,
+    ;; reconstructing the tree even if no need,
+    ;; but it's just a macroexpander, so... fine.
+    (collect ((binding-decls))
+      (let ((filtered
+             (mapcar (lambda (decl-expr) ; a list headed by DECLARE
+                       (mapcan (lambda (spec)
+                                 (multiple-value-bind (binding other)
+                                     (partition spec)
+                                   (when binding
+                                     (binding-decls binding))
+                                   (if other (list other))))
+                               (cdr decl-expr)))
+                     decls)))
+        (values (awhen (binding-decls) `(declare ,@it))
+                (mapcan (lambda (x) (if x (list `(declare ,@x)))) filtered))))))
+
 ;;; (binding* ({(names initial-value [flag])}*) body)
 ;;; FLAG may be NIL or :EXIT-IF-NULL
 ;;;
@@ -1254,11 +1329,17 @@
 ;;; them into the appropriate places. This qualifies as an extreme KLUDGE,
 ;;; but has desirable behavior of allowing declarations in the innermost form.
 ;;;
+;;; Caution: don't use declarations of the form (<non-builtin-type-id> <var>)
+;;; before the INFO database is set up in building the cross-compiler,
+;;; or you will probably lose.
+;;; Of course, since some other host Lisps don't seem to think that's
+;;; acceptable syntax anyway, you're pretty much prevented from writing it.
+;;;
 (defmacro binding* ((&rest bindings) &body body)
-  (labels
-      ((recurse (bindings &aux ignores)
+  (multiple-value-bind (forms decls) (parse-body body :doc-string-allowed nil)
+    (labels
+      ((recurse (bindings decls &aux ignores)
          (cond
-           ((not bindings) body)
            ((some (lambda (x)
                     (destructuring-bind (names value-form &optional flag) x
                       (declare (ignore value-form))
@@ -1273,14 +1354,25 @@
                  (setq names (mapcar (lambda (name)
                                        (or name (car (push (gensym) ignores))))
                                      names))))
-              `((multiple-value-bind ,names ,value-form
-                  ,@(ignore ignores)
-                  ,@(ecase flag
-                      ((nil) (recurse (cdr bindings)))
-                      ((:exit-if-null)
-                       `((when ,(first names)
-                           ,@(recurse (cdr bindings))))))))))
+              (multiple-value-bind (binding-decls rest-decls)
+                  ;; If no more bindings, and no (WHEN ...) before the FORMS,
+                  ;; then don't bother parsing decls.
+                  (if (or (cdr bindings) flag)
+                      (extract-var-decls decls
+                                         (filter-names names (cdr bindings)))
+                      (values nil decls))
+                (let ((continue (acond ((cdr bindings) (recurse it rest-decls))
+                                       (t (append decls forms)))))
+                  `((multiple-value-bind ,names ,value-form
+                      ,@(decl-expr binding-decls ignores)
+                      ,@(ecase flag
+                          ((nil) continue)
+                          ((:exit-if-null)
+                           `((when ,(first names) ,@continue))))))))))
            (t
+            ;; This case is not strictly necessary now that declarations that
+            ;; affect variables are correctly inserted into the M-V-BIND,
+            ;; but it makes the expansion more legible/concise when applicable.
             `((let* ,(mapcar (lambda (binding)
                                (if (car binding)
                                    binding
@@ -1288,16 +1380,27 @@
                                      (push var ignores)
                                      (cons var (cdr binding)))))
                              bindings)
-                ,@(ignore ignores)
+                ,@(decl-expr nil ignores)
                 ,@body)))))
-       (ignore (list)
+       (filter-names (names more-bindings)
+         ;; Return the subset of SYMBOLs that does not intersect any
+         ;; symbol in MORE-BINDINGS. This makes declarations apply only
+         ;; to the final occurrence of a repeated name, as is the custom.
+         (remove-if (lambda (x) (subsequently-bound-p x more-bindings)) names))
+       (subsequently-bound-p (name more-bindings)
+         (member-if (lambda (binding)
+                      (let ((names (car binding)))
+                        (if (listp names) (memq name names) (eq name names))))
+                    more-bindings))
+       (decl-expr (binding-decls ignores)
+         (nconc (if binding-decls (list binding-decls))
          ;; IGNORABLE, not IGNORE, just in case :EXIT-IF-NULL reads a gensym
-         (if list `((declare (ignorable ,@list))))))
+               (if ignores `((declare (ignorable ,@ignores)))))))
     ;; Zero bindings have to be special-cased. RECURSE returns a list of forms
     ;; because we musn't wrap BODY in a PROGN if it contains declarations,
     ;; so we unwrap once here, but if the body was returned as the base case
     ;; of recursion then (CAR (RECURSE)) would be wrong.
-    (if bindings (car (recurse bindings)) `(locally ,@body))))
+    (if bindings (car (recurse bindings decls)) `(locally ,@body)))))
 
 ;;; Delayed evaluation
 (defmacro delay (form)
@@ -1393,6 +1496,44 @@ to :INTERPRET, an interpreter will be used.")
                ,@(mapcar (lambda (bind) (if (consp bind) (car bind) bind))
                          bindings)))
      ,@forms))
+
+;; This is not my preferred name for this function, but chosen for harmony
+;; with everything else that refers to these as 'hash-caches'.
+;; Hashing is just one particular way of memoizing, and it would have been
+;; slightly more abstract and yet at the same time more concrete to say
+;; "memoized-function-caches". "hash-caches" is pretty nonspecific.
+#.(if *profile-hash-cache*
+'(defun show-hash-cache-statistics ()
+  (flet ((cache-stats (symbol)
+           (let* ((name (string symbol))
+                  (prefix
+                   (subseq name 0 (- (length name) (length "VECTOR**")))))
+             (values
+              (symbol-value (let ((*package* (symbol-package symbol)))
+                              (symbolicate prefix "STATISTICS**")))
+              (subseq prefix 2 (1- (length prefix)))))))
+    (format t "~%Type function memoization:~%     Seek       Hit      (%)~:
+    Evict      (%) Size    full~%")
+    ;; Sort by descending seek count to rank by likely relative importance
+    (dolist (symbol (sort (copy-list *cache-vector-symbols*) #'>
+                          :key (lambda (x) (aref (cache-stats x) 0))))
+      ;; Sadly we can't use BINDING* within this file
+      (multiple-value-bind (stats short-name) (cache-stats symbol)
+        (let* ((seek (aref stats 0))
+               (miss (aref stats 1))
+               (hit (- seek miss))
+               (evict (aref stats 2))
+               (cache (symbol-value symbol)))
+          (format t "~9d ~9d (~5,1f%) ~8d (~5,1f%) ~4d ~6,1f% ~A~%"
+                  seek hit
+                  (if (plusp seek) (* 100 (/ hit seek)))
+                  evict
+                  (if (plusp seek) (* 100 (/ evict seek)))
+                  (length cache)
+                  (if (plusp (length cache))
+                      (* 100 (/ (count-if-not #'fixnump cache)
+                                (length cache))))
+                  short-name)))))))
 
 (in-package "SB!KERNEL")
 

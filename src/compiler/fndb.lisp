@@ -886,7 +886,9 @@
                       (:initial-element t)
                       (:initial-contents t)
                       (:adjustable t)
-                      (:fill-pointer t)
+                      ;; the type constraint doesn't do anything
+                      ;; on account of EXPLICIT-CHECK. it's documentation.
+                      (:fill-pointer (or index boolean))
                       (:displaced-to (or array null))
                       (:displaced-index-offset index))
   array (flushable explicit-check))
@@ -899,7 +901,7 @@
                        (:initial-element t)
                        (:initial-contents t)
                        (:adjustable t)
-                       (:fill-pointer t)
+                       (:fill-pointer (or index boolean))
                        (:displaced-to (or array null))
                        (:displaced-index-offset index))
     array (flushable))
@@ -913,6 +915,10 @@
   type-specifier
   (foldable flushable recursive))
 (defknown array-rank (array) array-rank (foldable flushable))
+;; FIXME: there's a fencepost bug, but for all practical purposes our
+;; ARRAY-RANK-LIMIT is infinite, thus masking the bug. e.g. if the
+;; exclusive limit on rank were 8, then your dimension numbers can
+;; be in the range 0 through 6, not 0 through 7.
 (defknown array-dimension (array array-rank) index (foldable flushable))
 (defknown array-dimensions (array) list (foldable flushable))
 (defknown array-in-bounds-p (array &rest integer) boolean (foldable flushable))
@@ -963,7 +969,8 @@
 (defknown adjust-array
   (array (or index list) &key (:element-type type-specifier)
          (:initial-element t) (:initial-contents t)
-         (:fill-pointer t) (:displaced-to (or array null))
+         (:fill-pointer (or index boolean))
+         (:displaced-to (or array null))
          (:displaced-index-offset index))
   array ())
 ;  :derive-type 'result-type-arg1) Not even close...
@@ -1117,19 +1124,28 @@
   ())
 
 ;;; may return any type due to eof-value...
-(defknown (read read-preserving-whitespace read-char-no-hang read-char)
+;;; and because READ generally returns anything.
+(defknown (read read-preserving-whitespace)
   (&optional stream-designator t t t) t (explicit-check))
+
+(defknown read-char (&optional stream-designator t t t) t (explicit-check)
+  :derive-type (read-elt-type-deriver nil 'character nil))
+(defknown read-char-no-hang (&optional stream-designator t t t) t
+  (explicit-check)
+  :derive-type (read-elt-type-deriver nil 'character t))
 
 (defknown read-delimited-list (character &optional stream-designator t) list
   (explicit-check))
+;; FIXME: add a type-deriver => (values (or string eof-value) boolean)
 (defknown read-line (&optional stream-designator t t t) (values t boolean)
   (explicit-check))
 (defknown unread-char (character &optional stream-designator) t
   (explicit-check))
 (defknown peek-char (&optional (or character (member nil t))
-                               stream-designator t t t)
-  t
-  (explicit-check))
+                               stream-designator t t t) t
+  (explicit-check)
+  :derive-type (read-elt-type-deriver t 'character nil))
+
 (defknown listen (&optional stream-designator) boolean (flushable explicit-check))
 
 (defknown clear-input (&optional stream-designator) null (explicit-check))
@@ -1149,7 +1165,8 @@
           (:junk-allowed t))
   (values (or integer null ()) index))
 
-(defknown read-byte (stream &optional t t) t (explicit-check))
+(defknown read-byte (stream &optional t t) t (explicit-check)
+  :derive-type (read-elt-type-deriver nil 'integer nil))
 
 (defknown (prin1 print princ) (t &optional stream-designator)
   t

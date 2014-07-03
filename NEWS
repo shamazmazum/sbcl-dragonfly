@@ -1,11 +1,13 @@
 ;;;; -*- coding: utf-8; fill-column: 78 -*-
-changes relative to sbcl-1.2.0:
+changes in sbcl-1.2.1 relative to sbcl-1.2.0:
   * enhancement: GENCGC is enabled on ARM.
   * enhancement: better error reporting for invalid calls to local functions.
   * enhancement: support for GNU/kFreeBSD distributions.  (lp#1079954, thanks
     to Christoph Egger)
   * enhancement: experimental support for threads on NetBSD/x86-64.  (thanks
     to Robert Swindells)
+  * enhancement: support for DragonFly BSD.  (lp#1292845, thanks to Vasily
+    Postnicov)
   * bug fix: TYPE-OF must not return AND/OR/NOT expressions.
     (lp#1317308)
   * bug fix: accessing NIL arrays stopped producing errors. (lp#1311421)
