@@ -31,36 +31,53 @@
   (def))
 
 ;;; Is X an extended sequence?
+;; This is like the "hierarchical layout depths for other things"
+;; case of the TYPEP transform (cf 'typetran'). Ideally it would
+;; be preferable to share TYPEP's code rather than repeat it here.
+(declaim (maybe-inline extended-sequence-p))
 (defun extended-sequence-p (x)
-  (and (not (listp x))
-       (not (vectorp x))
-       (let* ((slayout #.(info :type :compiler-layout 'sequence))
-             (depthoid #.(layout-depthoid (info :type :compiler-layout 'sequence)))
-             (layout (layout-of x)))
-        (when (layout-invalid layout)
-          (setq layout (update-object-layout-or-invalid x slayout)))
-        (if (eq layout slayout)
-            t
-            (let ((inherits (layout-inherits layout)))
-              (declare (optimize (safety 0)))
-              (and (> (length inherits) depthoid)
-                   (eq (svref inherits depthoid) slayout)))))))
+  (let* ((slayout #.(info :type :compiler-layout 'sequence))
+         (depthoid #.(layout-depthoid (info :type :compiler-layout 'sequence)))
+         (layout
+          ;; It is not an error to define a class that is both SEQUENCE and
+          ;; FUNCALLABLE-INSTANCE with metaclass FUNCALLABLE-STANDARD-CLASS
+          (cond ((%instancep x) (%instance-layout x))
+                ((funcallable-instance-p x) (%funcallable-instance-layout x))
+                (t (return-from extended-sequence-p nil)))))
+    (when (layout-invalid layout)
+      (setq layout (update-object-layout-or-invalid x slayout)))
+    ;; It's _nearly_ impossible to create an instance which is exactly
+    ;; of type SEQUENCE. To wit: (make-instance 'sequence) =>
+    ;;   "Cannot allocate an instance of #<BUILT-IN-CLASS SEQUENCE>."
+    ;; We should not need to check for that, just the 'inherits' vector.
+    ;; However, bootstrap code does a sleazy thing, making an instance of
+    ;; the abstract base type which is impossible for user code to do.
+    ;; Preferably the prototype instance for SEQUENCE would be one that could
+    ;; exist, so it would be a STANDARD-OBJECT and SEQUENCE. But it's not.
+    ;; Hence we have to check for a layout that no code using the documented
+    ;; sequence API would ever see, just to get the boundary case right.
+    ;; Note also:
+    ;; - Some builtins use a prototype object that is strictly deeper than
+    ;;   layout of the named class because it is indeed the case that no
+    ;;   object's layout can ever be EQ to that of the ancestor.
+    ;;   e.g. a fixnum as representative of class REAL
+    ;; - Some builtins actually fail (TYPEP (CLASS-PROTOTYPE X) X)
+    ;;   but that's not an excuse for getting SEQUENCE wrong:
+    ;;    (CLASS-PROTOTYPE (FIND-CLASS 'FLOAT)) => 42
+    ;;    (CLASS-PROTOTYPE (FIND-CLASS 'VECTOR)) => 42
+    ;;    (CLASS-PROTOTYPE (FIND-CLASS 'LIST)) => 42
+    ;;    (CLASS-PROTOTYPE (FIND-CLASS 'STRING)) => 42
+    (let ((inherits (layout-inherits (truly-the layout layout))))
+      (declare (optimize (safety 0)))
+      (if (and (> (length inherits) depthoid)
+               (eq (svref inherits depthoid) slayout))
+          t
+          (eq layout slayout)))))
 
 ;;; Is X a SEQUENCE?  Harder than just (OR VECTOR LIST)
 (defun sequencep (x)
-  (or (listp x)
-      (vectorp x)
-      (let* ((slayout #.(info :type :compiler-layout 'sequence))
-             (depthoid #.(layout-depthoid (info :type :compiler-layout 'sequence)))
-             (layout (layout-of x)))
-        (when (layout-invalid layout)
-          (setq layout (update-object-layout-or-invalid x slayout)))
-        (if (eq layout slayout)
-            t
-            (let ((inherits (layout-inherits layout)))
-              (declare (optimize (safety 0)))
-              (and (> (length inherits) depthoid)
-                   (eq (svref inherits depthoid) slayout)))))))
+  (declare (inline extended-sequence-p))
+  (or (listp x) (vectorp x) (extended-sequence-p x)))
 
 ;;;; primitive predicates. These must be supported directly by the
 ;;;; compiler.

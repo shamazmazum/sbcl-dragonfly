@@ -28,7 +28,9 @@
 
 (macrolet
     ((frob ()
-       (flet ((file (name type)
+       (flet ((coerce-it (array)
+                (!coerce-to-specialized array '(unsigned-byte 8)))
+              (file (name type)
                 (merge-pathnames (make-pathname
                                   :directory
                                   '(:relative :up :up "output")
@@ -52,13 +54,16 @@
                              **character-database**
                              **character-decompositions**
                              **character-long-decompositions**))
-              (defglobal **character-database** ,character-database)
-              (defglobal **character-decompositions** ,decompositions)
-              (defglobal **character-long-decompositions** ,long-decompositions)
+              (defglobal **character-database** ,(coerce-it character-database))
+              (defglobal **character-decompositions**
+                  ,(coerce-it decompositions))
+              (defglobal **character-long-decompositions**
+                  ,(coerce-it long-decompositions))
               ;; KLUDGE: temporary value, fixed up in cold-load
-              (defglobal **character-primary-compositions** ,primary-compositions)
+              (defglobal **character-primary-compositions**
+                  ,(coerce-it primary-compositions))
               (defun !character-database-cold-init ()
-                (setf **character-database** ,character-database)
+                (setf **character-database** ,(coerce-it character-database))
                 (setf **character-primary-compositions**
                       (let ((table (make-hash-table))
                             (info ,primary-compositions))
@@ -129,7 +134,8 @@
     (#x04 "Eot" "^d")
     (#x05 "Enq" "^e")
     (#x06 "Ack" "^f")
-    (#x07 "Bel" "Bell" "^g")
+    ;; Don't alias to Bell, another Unicode character has that name.
+    (#x07 "Bel" "^g")
     (#x08 "Backspace" "^h" "Bs") ; *** See Note above
     (#x09 "Tab" "^i" "Ht") ; *** See Note above
     (#x0A "Newline" "Linefeed" "^j" "Lf" "Nl") ; *** See Note above

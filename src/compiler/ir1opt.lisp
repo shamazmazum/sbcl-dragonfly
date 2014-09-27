@@ -154,7 +154,6 @@
          (if (array-type-complexp type)
              (make-array-type
               ;; ADJUST-ARRAY may change dimensions, but rank stays same.
-              :dimensions
               (let ((old (array-type-dimensions type)))
                 (if (eq '* old)
                     old
@@ -1296,9 +1295,9 @@
          (fun (transform-function transform))
          (constrained (fun-type-p type))
          (table (component-failed-optimizations *component-being-compiled*))
-         (flame (if (transform-important transform)
-                    (policy node (>= speed inhibit-warnings))
-                    (policy node (> speed inhibit-warnings))))
+         (flame (case (transform-important transform)
+                  ((t) (policy node (>= speed inhibit-warnings)))
+                  (:slightly (policy node (> speed inhibit-warnings)))))
          (*compiler-error-context* node))
     (cond ((or (not constrained)
                (valid-fun-use node type))

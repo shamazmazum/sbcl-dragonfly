@@ -771,6 +771,39 @@
   (def string>* nil nil)
   (def string>=* nil t))
 
+(deftransform string=* ((string1 string2 start1 end1 start2 end2)
+                        (string string
+                                (constant-arg (eql 0))
+                                (constant-arg null)
+                                (constant-arg (eql 0))
+                                (constant-arg null)))
+  (cond ((and (constant-lvar-p string1)
+              (equal (lvar-value string1) ""))
+         `(zerop (length string2)))
+        ((and (constant-lvar-p string2)
+              (equal (lvar-value string2) ""))
+         `(zerop (length string1)))
+        (t
+         (give-up-ir1-transform))))
+
+(deftransform string/=* ((string1 string2 start1 end1 start2 end2)
+                         (string string
+                                 (constant-arg (eql 0))
+                                 (constant-arg null)
+                                 (constant-arg (eql 0))
+                                 (constant-arg null)))
+  (cond ((and (constant-lvar-p string1)
+              (equal (lvar-value string1) ""))
+         (lvar-type string2)
+         `(and (plusp (length string2))
+               0))
+        ((and (constant-lvar-p string2)
+              (equal (lvar-value string2) ""))
+         `(and (plusp (length string1))
+               0))
+        (t
+         (give-up-ir1-transform))))
+
 (macrolet ((def (name result-fun)
              `(deftransform ,name ((string1 string2 start1 end1 start2 end2)
                                    (simple-base-string simple-base-string t t t t) *)
@@ -781,6 +814,7 @@
   (def string=* not)
   (def string/=* identity))
 
+(deftransform string ((x) (symbol)) '(symbol-name x))
 
 ;;;; transforms for sequence functions
 
@@ -1690,14 +1724,14 @@
                         `(list* ,@variants ',tail)
                         `(list ,@variants)))))))))
 
-(deftransform sb!impl::backq-list ((&rest elts))
+(deftransform sb!impl::|List| ((&rest elts))
   (transform-backq-list-or-list* 'list elts))
 
-(deftransform sb!impl::backq-list* ((&rest elts))
+(deftransform sb!impl::|List*| ((&rest elts))
   (transform-backq-list-or-list* 'list* elts))
 
 ;; Merge adjacent constant values
-(deftransform sb!impl::backq-append ((&rest elts))
+(deftransform sb!impl::|Append| ((&rest elts))
   (let ((gensyms (make-gensym-list (length elts)))
         (acc nil)
         (ignored '())
@@ -1724,12 +1758,3 @@
       `(lambda ,gensyms
          (declare (ignore ,@ignored))
          (append ,@arguments)))))
-
-;; Nothing special for nconc
-(define-source-transform sb!impl::backq-nconc (&rest elts)
-  `(nconc ,@elts))
-
-;; cons and vector are handled with regular constant folding...
-;; but we still want to convert backq-cons into cl:cons.
-(deftransform sb!impl::backq-cons ((x y))
-  `(cons x y))

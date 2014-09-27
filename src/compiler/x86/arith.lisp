@@ -44,6 +44,14 @@
     (move res x)
     (inst neg res)))
 
+(define-vop (fast-negate/unsigned signed-unop)
+  (:args (x :scs (unsigned-reg) :target res))
+  (:arg-types unsigned-num)
+  (:translate %negate)
+  (:generator 3
+    (move res x)
+    (inst neg res)))
+
 (define-vop (fast-lognot/fixnum fixnum-unop)
   (:translate lognot)
   (:generator 1
@@ -190,6 +198,30 @@
   (define-binop logand 2 and)
   (define-binop logior 2 or)
   (define-binop logxor 2 xor))
+
+(define-vop (fast-logior-unsigned-signed=>signed fast-safe-arith-op)
+  (:args (x :scs (unsigned-reg))
+         (y :target r :scs (signed-reg)))
+  (:arg-types unsigned-num signed-num)
+  (:results (r :scs (signed-reg) :from (:argument 1)))
+  (:result-types signed-num)
+  (:note "inline (unsigned-byte 32) arithmetic")
+  (:translate logior)
+  (:generator 3
+    (move r y)
+    (inst or r x)))
+
+(define-vop (fast-logior-signed-unsigned=>signed fast-safe-arith-op)
+  (:args (x :target r :scs (signed-reg))
+         (y :scs (unsigned-reg)))
+  (:arg-types signed-num unsigned-num)
+  (:results (r :scs (signed-reg) :from (:argument 0)))
+  (:result-types signed-num)
+  (:note "inline (unsigned-byte 32) arithmetic")
+  (:translate logior)
+  (:generator 3
+    (move r x)
+    (inst or r y)))
 
 ;;; Special handling of add on the x86; can use lea to avoid a
 ;;; register load, otherwise it uses add.
@@ -1351,6 +1383,7 @@ constant shift greater than word length")))
                    (funfx (intern (format nil "~S-MODFX" name)))
                    (vopfxf (intern (format nil "FAST-~S-MODFX/FIXNUM=>FIXNUM" name)))
                    (vopfxcf (intern (format nil "FAST-~S-MODFX-C/FIXNUM=>FIXNUM" name))))
+               (declare (ignore vop32cf)) ; maybe someone will want it some day
                `(progn
                   (define-modular-fun ,fun32 (x y) ,name :untagged nil 32)
                   (define-modular-fun ,funfx (x y) ,name :tagged t

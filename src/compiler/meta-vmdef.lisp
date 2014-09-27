@@ -549,9 +549,7 @@
   (let ((temps (vop-parse-temps parse))
         (element-type '(unsigned-byte 16)))
     (when temps
-      (let ((results (make-specializable-array
-                      (length temps)
-                      :element-type element-type))
+      (let ((results (!make-specialized-array (length temps) element-type))
             (index 0))
         (dolist (temp temps)
           (declare (type operand-parse temp))
@@ -565,14 +563,7 @@
                          1)
                       (ash (sc-number-or-lose sc) 1))))
           (incf index))
-        ;; KLUDGE: The load-time MAKE-ARRAY here is an artifact of our
-        ;; cross-compilation strategy, and the conservative
-        ;; assumptions we are forced to make on which specialized
-        ;; arrays exist on the host lisp that the cross-compiler is
-        ;; running on.  (We used to use COERCE here, but that caused
-        ;; SUBTYPEP calls too early in cold-init for comfort).  --
-        ;; CSR, 2009-10-30
-        `(make-array ,(length results) :element-type '(specializable ,element-type) :initial-contents ',results)))))
+        results))))
 
 (defun compute-ref-ordering (parse)
   (let* ((num-args (+ (length (vop-parse-args parse))
@@ -640,24 +631,17 @@
              ;; not correspond to the definition in
              ;; src/compiler/vop.lisp.
              (te-type '(unsigned-byte 16))
-             (ordering (make-specializable-array
-                        (length sorted)
-                        :element-type oe-type)))
+             (ordering (!make-specialized-array (length sorted) oe-type)))
         (let ((index 0))
           (dolist (ref sorted)
             (setf (aref ordering index) (cdr ref))
             (incf index)))
         `(:num-args ,num-args
           :num-results ,num-results
-          ;; KLUDGE: see the comment regarding MAKE-ARRAY in
-          ;; COMPUTE-TEMPORARIES-DESCRIPTION.  -- CSR, 2009-10-30
-          :ref-ordering (make-array ,(length ordering)
-                                    :initial-contents ',ordering
-                                    :element-type '(specializable ,oe-type))
+          :ref-ordering ,ordering
           ,@(when (targets)
-              `(:targets (make-array ,(length (targets))
-                                     :initial-contents ',(targets)
-                                     :element-type '(specializable ,te-type)))))))))
+              `(:targets ,(!make-specialized-array
+                           (length (targets)) te-type (targets)))))))))
 
 (defun make-emit-function-and-friends (parse)
   `(:temps ,(compute-temporaries-description parse)
@@ -1301,7 +1285,7 @@
 
 ;;; Compute stuff that can only be computed after we are done parsing
 ;;; everying. We set the VOP-PARSE-OPERANDS, and do various error checks.
-(defun !grovel-vop-operands (parse)
+(defun grovel-vop-operands (parse)
   (declare (type vop-parse parse))
 
   (setf (vop-parse-operands parse)
@@ -1334,7 +1318,7 @@
 ;;; set the PREDICATE attribute for each translated function when the
 ;;; VOP is conditional, causing IR1 conversion to ensure that a call
 ;;; to the translated is always used in a predicate position.
-(defun !set-up-fun-translation (parse n-template)
+(defun set-up-fun-translation (parse n-template)
   (declare (type vop-parse parse))
   (mapcar (lambda (name)
             `(let ((info (fun-info-or-lose ',name)))
@@ -1640,7 +1624,7 @@
     (setf (vop-parse-inherits parse) inherits)
 
     (parse-define-vop parse specs)
-    (!grovel-vop-operands parse)
+    (grovel-vop-operands parse)
 
     `(progn
        (eval-when (:compile-toplevel :load-toplevel :execute)
@@ -1651,7 +1635,7 @@
          (setf (gethash ',name *backend-template-names*) ,n-res)
          (setf (template-type ,n-res)
                (specifier-type (template-type-specifier ,n-res)))
-         ,@(!set-up-fun-translation parse n-res))
+         ,@(set-up-fun-translation parse n-res))
        ',name)))
 
 ;;;; emission macros

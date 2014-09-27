@@ -194,14 +194,14 @@
   ;; string used in efficiency notes
   (note (missing-arg) :type string)
   ;; T if we should emit a failure note even if SPEED=INHIBIT-WARNINGS.
-  (important nil :type (member t nil)))
+  (important nil :type (member nil :slightly t)))
 
 (defprinter (transform) type note important)
 
 ;;; Grab the FUN-INFO and enter the function, replacing any old
 ;;; one with the same type and note.
 (declaim (ftype (function (t list function &optional (or string null)
-                             (member t nil))
+                             (member nil :slightly t))
                           *)
                 %deftransform))
 (defun %deftransform (name type fun &optional note important)
@@ -339,6 +339,13 @@
 ;;; with the additional restriptions noted in the CLHS for STRING and
 ;;; SIMPLE-STRING, defined to specialize on CHARACTER, and for VECTOR
 ;;; (under the page for MAKE-SEQUENCE).
+;;; At present this is used to derive the output type of CONCATENATE,
+;;; MAKE-SEQUENCE, and MERGE. Two things seem slightly amiss:
+;;; 1. The sequence type actually produced might not be exactly that specified.
+;;;    (TYPE-OF (MAKE-SEQUENCE '(AND (NOT SIMPLE-ARRAY) (VECTOR BIT)) 9))
+;;;    => (SIMPLE-BIT-VECTOR 9)
+;;; 2. Because we *know* that a hairy array won't be produced,
+;;;    why does derivation preserve the non-simpleness, if so specified?
 (defun creation-result-type-specifier-nth-arg (n)
   (lambda (call)
     (declare (type combination call))
@@ -364,15 +371,10 @@
                (if (and (array-type-p ctype)
                         (eq (array-type-specialized-element-type ctype)
                             *wild-type*))
-                   ;; I don't think I'm allowed to modify what I get
-                   ;; back from SPECIFIER-TYPE; it is, after all,
-                   ;; cached.  Better copy it, then.
-                   (let ((real-ctype (copy-structure ctype)))
-                     (setf (array-type-element-type real-ctype)
-                           *universal-type*
-                           (array-type-specialized-element-type real-ctype)
-                           *universal-type*)
-                     real-ctype)
+                   (make-array-type (array-type-dimensions ctype)
+                    :complexp (array-type-complexp ctype)
+                    :element-type *universal-type*
+                    :specialized-element-type *universal-type*)
                    ctype)))))))))
 
 (defun remove-non-constants-and-nils (fun)
@@ -436,5 +438,15 @@
       (if no-hang
           (type-union unexceptional-type null-type)
           unexceptional-type))))
+
+(defun position-derive-type (call)
+  (declare (type combination call))
+  (let ((seq (second (combination-args call))))
+    ;; Could possibly constrain the result more highly if
+    ;; the :start/:end were provided and of known types.
+    (when (constant-lvar-p seq)
+      (let ((seq (lvar-value seq)))
+        (when (typep seq '(simple-array * (*)))
+          (specifier-type `(or (integer 0 (,(length seq))) null)))))))
 
 (/show0 "knownfun.lisp end of file")

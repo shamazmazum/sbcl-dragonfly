@@ -16,30 +16,18 @@
 (use-package "ASSERTOID")
 (use-package "TEST-UTIL")
 
-(defun (setf foo) (x)
-  "(setf foo) documentation"
-  x)
-
-(assert (string= (documentation '(setf foo) 'function)
-                 "(setf foo) documentation"))
-(assert (string= (documentation #'(setf foo) 'function)
-                 "(setf foo) documentation"))
-
-(assert (string= (documentation '(setf foo) 'function)
-                 "(setf foo) documentation"))
-(assert (string= (documentation #'(setf foo) 'function)
-                 "(setf foo) documentation"))
 
 (with-test (:name :disassemble)
 ;;; DISASSEMBLE shouldn't fail on closures or unpurified functions
   (defun disassemble-fun (x) x)
-  (disassemble 'disassemble-fun)
+  (disassemble 'disassemble-fun))
 
+(with-test (:name :disassemble-closure)
   (let ((x 1)) (defun disassemble-closure (y) (if y (setq x y) x)))
-  (disassemble 'disassemble-closure)
+  (disassemble 'disassemble-closure))
 
-  #+sb-eval
-  (progn
+#+sb-eval
+(with-test (:name :disassemble-interpreted)
     ;; Nor should it fail on interpreted functions
     (let ((sb-ext:*evaluator-mode* :interpret))
       (eval `(defun disassemble-eval (x) x))
@@ -51,6 +39,7 @@
     ;; is not installed.)"
     (assert (sb-eval:interpreted-function-p #'disassemble-eval)))
 
+(with-test (:name :disassemble-generic)
   ;; nor should it fail on generic functions or other funcallable instances
   (defgeneric disassemble-generic (x))
   (disassemble 'disassemble-generic)
@@ -141,51 +130,91 @@
 
 
 ;;; Tests of documentation on types and classes
+
+(defun assert-documentation (thing doc-type expected)
+  ;; This helper function makes ASSERT errors print THING, DOC-TYPE,
+  ;; the return value of DOCUMENTATION and EXPECTED.
+  (flet ((assert-documentation-helper (thing doc-type documentation expected)
+           (declare (ignore thing doc-type))
+           (equal documentation expected)))
+    (assert (assert-documentation-helper
+             thing doc-type (documentation thing doc-type) expected))))
+
+(defpackage #:documentation.package
+  (:documentation "PACKAGE"))
+
+(with-test (:name (documentation package))
+  (assert-documentation (find-package '#:documentation.package) t "PACKAGE")
+  (setf (documentation (find-package '#:documentation.package) t) "PACKAGE2")
+  (assert-documentation (find-package '#:documentation.package) t "PACKAGE2"))
+
 (defclass foo ()
   ()
   (:documentation "FOO"))
+
+(defclass documentation.funcallable-instance ()
+  ()
+  (:metaclass sb-mop:funcallable-standard-class)
+  (:documentation "FEZ"))
+
 (defstruct bar "BAR")
+
 (define-condition baz ()
   ()
   (:documentation "BAZ"))
-(deftype quux ()
-  "QUUX"
-  't)
-(defstruct (frob (:type vector)) "FROB")
+
 (macrolet
     ((do-class (name expected &optional structurep)
        `(progn
-         (assert (string= (documentation ',name 'type) ,expected))
-         (assert (string= (documentation (find-class ',name) 'type) ,expected))
-         (assert (string= (documentation (find-class ',name) 't) ,expected))
-         ,@(when structurep
-            `((assert (string= (documentation ',name 'structure) ,expected))))
-         (let ((new1 (symbol-name (gensym "NEW1")))
-               (new2 (symbol-name (gensym "NEW2")))
-               (new3 (symbol-name (gensym "NEW3")))
-               (new4 (symbol-name (gensym "NEW4"))))
-           (declare (ignorable new4))
-           (setf (documentation ',name 'type) new1)
-           (assert (string= (documentation (find-class ',name) 'type) new1))
-           (setf (documentation (find-class ',name) 'type) new2)
-           (assert (string= (documentation (find-class ',name) 't) new2))
-           (setf (documentation (find-class ',name) 't) new3)
-           (assert (string= (documentation ',name 'type) new3))
-           ,@(when structurep
-              `((assert (string= (documentation ',name 'structure) new3))
-                (setf (documentation ',name 'structure) new4)
-                (assert (string= (documentation ',name 'structure) new4))))))))
-  (do-class foo "FOO")
-  (do-class bar "BAR" t)
-  (do-class baz "BAZ"))
+          (assert-documentation ',name 'type ,expected)
+          (assert-documentation (find-class ',name) 'type ,expected)
+          (assert-documentation (find-class ',name) 't ,expected)
+          ,@(when structurep
+              `((assert-documentation ',name 'structure ,expected)))
 
-(assert (string= (documentation 'quux 'type) "QUUX"))
-(setf (documentation 'quux 'type) "NEW4")
-(assert (string= (documentation 'quux 'type) "NEW4"))
+          (let ((new1 (symbol-name (gensym "NEW1")))
+                (new2 (symbol-name (gensym "NEW2")))
+                (new3 (symbol-name (gensym "NEW3")))
+                (new4 (symbol-name (gensym "NEW4"))))
+            (declare (ignorable new4))
+            (setf (documentation ',name 'type) new1)
+            (assert-documentation (find-class ',name) 'type new1)
+            (setf (documentation (find-class ',name) 'type) new2)
+            (assert-documentation (find-class ',name) 't new2)
+            (setf (documentation (find-class ',name) 't) new3)
+            (assert-documentation ',name 'type new3)
+            ,@(when structurep
+                `((assert-documentation ',name 'structure new3)
+                  (setf (documentation ',name 'structure) new4)
+                  (assert-documentation ',name 'structure new4)))))))
 
-(assert (string= (documentation 'frob 'structure) "FROB"))
-(setf (documentation 'frob 'structure) "NEW5")
-(assert (string= (documentation 'frob 'structure) "NEW5"))
+  (with-test (:name (documentation class standard-class))
+    (do-class foo "FOO"))
+
+  (with-test (:name (documentation class sb-mop:funcallable-standard-class))
+    (do-class documentation.funcallable-instance "FEZ"))
+
+  (with-test (:name (documentation struct 1))
+    (do-class bar "BAR" t))
+
+  (with-test (:name (documentation condition))
+    (do-class baz "BAZ")))
+
+(defstruct (frob (:type vector)) "FROB")
+
+(with-test (:name (documentation struct 2))
+  (assert-documentation 'frob 'structure "FROB")
+  (setf (documentation 'frob 'structure) "NEW5")
+  (assert-documentation 'frob 'structure "NEW5"))
+
+(deftype quux ()
+  "QUUX"
+  't)
+
+(with-test (:name (documentation type))
+  (assert-documentation 'quux 'type "QUUX")
+  (setf (documentation 'quux 'type) "NEW4")
+  (assert-documentation 'quux 'type "NEW4"))
 
 (define-compiler-macro cmacro (x)
   "compiler macro"
@@ -193,26 +222,51 @@
 
 (define-compiler-macro (setf cmacro) (y x)
   "setf compiler macro"
+  (declare (ignore x))
   y)
 
 (with-test (:name (documentation compiler-macro))
-  (unless (equal "compiler macro"
-                 (documentation 'cmacro 'compiler-macro))
-    (error "got ~S for cmacro"
-           (documentation 'cmacro 'compiler-macro)))
-  (unless (equal "setf compiler macro"
-                 (documentation '(setf cmacro) 'compiler-macro))
-    (error "got ~S for setf macro" (documentation '(setf cmacro) 'compiler-macro))))
+  (assert-documentation 'cmacro 'compiler-macro "compiler macro")
+  (assert-documentation '(setf cmacro) 'compiler-macro "setf compiler macro"))
+
+(defun (setf documentation.setf) (x)
+  "(setf foo) documentation"
+  x)
+
+(with-test (:name (documentation function setf))
+  (flet ((expect (documentation)
+           (assert-documentation
+            '(setf documentation.setf) 'function documentation)
+           (assert-documentation
+            #'(setf documentation.setf) 'function documentation)
+           (assert-documentation
+            #'(setf documentation.setf) t documentation)))
+    (expect "(setf foo) documentation")
+    ;; The original test checked this twice. No idea why.
+    (expect "(setf foo) documentation")
+
+    ;; Modification
+    (setf (documentation '(setf documentation.setf) 'function)
+          "(setf bar) documentation")
+    (expect "(setf bar) documentation")
+
+    (setf (documentation #'(setf documentation.setf) 'function)
+          "(setf baz) documentation")
+    (expect "(setf baz) documentation")
+
+    (setf (documentation #'(setf documentation.setf) t)
+          "(setf fez) documentation")
+    (expect "(setf fez) documentation")))
 
 (with-test (:name (documentation lambda))
   (let ((f (lambda () "aos the zos" t))
         (g (sb-int:named-lambda fii () "zoot the fruit" t)))
     (dolist (doc-type '(t function))
-      (assert (string= (documentation f doc-type) "aos the zos"))
-      (assert (string= (documentation g doc-type) "zoot the fruit")))
+      (assert-documentation f doc-type "aos the zos")
+      (assert-documentation g doc-type "zoot the fruit"))
     (setf (documentation f t) "fire")
-    (assert (string= (documentation f t) "fire"))
-    (assert (string= (documentation g t) "zoot the fruit"))))
+    (assert-documentation f t "fire")
+    (assert-documentation g t "zoot the fruit")))
 
 (with-test (:name (documentation flet))
   (assert
@@ -242,21 +296,54 @@
     (incf x y)))
 
 (with-test (:name (documentation :closure))
-  (assert (string= (documentation 'docfoo 'function) "bar"))
+  (assert-documentation 'docfoo 'function "bar")
   (assert (string= (setf (documentation 'docfoo 'function) "baz") "baz"))
-  (assert (string= (documentation 'docfoo 'function) "baz"))
-  (assert (string= (documentation #'docfoo t) "baz"))
+  (assert-documentation 'docfoo 'function "baz")
+  (assert-documentation #'docfoo t "baz")
   (assert (string= (setf (documentation #'docfoo t) "zot") "zot"))
-  (assert (string= (documentation #'docfoo t) "zot"))
-  (assert (string= (documentation 'docfoo 'function) "zot"))
+  (assert-documentation #'docfoo t "zot")
+  (assert-documentation 'docfoo 'function "zot")
   (assert (not (setf (documentation 'docfoo 'function) nil)))
-  (assert (not (documentation 'docfoo 'function))))
+  (assert-documentation 'docfoo 'function nil))
 
 (with-test (:name (documentation :built-in-macro) :skipped-on '(not :sb-doc))
   (assert (documentation 'trace 'function)))
 
 (with-test (:name (documentation :built-in-function) :skipped-on '(not :sb-doc))
   (assert (documentation 'cons 'function)))
+
+(defvar documentation.variable nil
+  "foo variable documentation")
+
+(with-test (:name (documentation variable))
+  (assert-documentation 'documentation.variable 'variable
+                        "foo variable documentation")
+  (setf (documentation 'documentation.variable 'variable)
+        "baz variable documentation")
+  (assert-documentation 'documentation.variable 'variable
+                        "baz variable documentation"))
+
+(with-test (:name (documentation :mismatch-for-function))
+  (defun test ()
+    "X"
+    nil)
+  (setf (symbol-function 'test2) #'test)
+  (setf (documentation 'test 'function) "Y")
+  (assert (equal (documentation #'test t)
+                 (documentation 'test 'function)))
+  (setf (documentation 'test2 'function) "Z")
+  (assert (not
+           (equal (documentation 'test 'function)
+                  (documentation 'test2 'function)))))
+
+(with-test (:name (documentation setf :on nil))
+  (assert
+   (handler-case
+       (assert (equal (setf (documentation nil 'function) "foo") "foo"))
+     (style-warning () t)
+     (:no-error (x)
+       (declare (ignore x))
+       nil))))
 
 (with-test (:name :describe-generic-function-with-assumed-type)
   ;; Signalled an error at one point
@@ -305,28 +392,6 @@
   (assert
    (or (member :big-endian *features*)
        (member :little-endian *features*))))
-
-(with-test (:name :function-documentation-mismatch)
-  (defun test ()
-    "X"
-    nil)
-  (setf (symbol-function 'test2) #'test)
-  (setf (documentation 'test 'function) "Y")
-  (assert (equal (documentation #'test t)
-                 (documentation 'test 'function)))
-  (setf (documentation 'test2 'function) "Z")
-  (assert (not
-           (equal (documentation 'test 'function)
-                  (documentation 'test2 'function)))))
-
-(with-test (:name :setf-documentation-on-nil)
-  (assert
-   (handler-case
-       (assert (equal (setf (documentation nil 'function) "foo") "foo"))
-     (style-warning () t)
-     (:no-error (x)
-       (declare (ignore x))
-       nil))))
 
 (with-test (:name (trace generic-function))
   (defgeneric traced-gf (x))

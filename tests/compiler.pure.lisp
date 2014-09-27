@@ -1559,12 +1559,14 @@
                    (compile nil '(lambda ,arglist ,@body))
                  (sb-ext:compiler-note (e)
                    (error "bad compiler note for ~S:~%  ~A" ',body e)))
-               (catch :got-note
-                 (handler-case
+               (let ((gotit nil))
+                 (handler-bind ((compiler-note
+                                 (lambda (c)
+                                   (setq gotit t) (muffle-warning c))))
                      (compile nil '(lambda ,arglist (declare (optimize speed))
-                                    ,@body))
-                   (sb-ext:compiler-note (e) (throw :got-note nil)))
-                 (error "missing compiler note for ~S" ',body)))))
+                                    ,@body)))
+                 (unless gotit
+                   (error "missing compiler note for ~S" ',body))))))
   (frob (x) (funcall x))
   (frob (x y) (find x y))
   (frob (x y) (find-if x y))
@@ -1576,11 +1578,13 @@
 
 (macrolet ((frob (style-warn-p form)
              (if style-warn-p
-                 `(catch :got-style-warning
-                   (handler-case
-                       (eval ',form)
-                     (style-warning (e) (throw :got-style-warning nil)))
-                   (error "missing style-warning for ~S" ',form))
+                 `(let ((gotit nil))
+                   (handler-bind ((style-warning
+                                   (lambda (c)
+                                     (setq gotit t) (muffle-warning c))))
+                       (eval ',form))
+                    (unless gotit
+                      (error "missing style-warning for ~S" ',form)))
                  `(handler-case
                    (eval ',form)
                    (style-warning (e)
@@ -2134,65 +2138,61 @@
                           x))))
     (compiler-note () (error "Deleted reachable code."))))
 
+(defun assert-code-deletion-note (lambda &optional (howmany 1))
+  (let ((n 0))
+    (handler-bind ((code-deletion-note
+                    (lambda (c)
+                      (incf n)
+                      ;; even though notes are not warnings,
+                      ;; compiler-notify provides the MUFFLE-WARNING restart.
+                      (muffle-warning c))))
+      (compile nil lambda)
+      (assert (eql n howmany)))))
+
 (with-test (:name (:compiler :constraint-propagation :float-bounds-2))
-  (catch :note
-    (handler-case
-        (compile nil '(lambda (x)
+  (assert-code-deletion-note
+                     '(lambda (x)
                         (declare (type single-float x))
                         (when (< 1.0 x)
                           (when (<= x 1.0)
-                            (error "This is unreachable.")))))
-      (compiler-note () (throw :note nil)))
-    (error "Unreachable code undetected.")))
+                            (error "This is unreachable."))))))
 
 (with-test (:name (:compiler :constraint-propagation :float-bounds-3
                    :LP-894498))
-  (catch :note
-    (handler-case
-        (compile nil '(lambda (x)
+  (assert-code-deletion-note
+                     '(lambda (x)
                         (declare (type (single-float 0.0) x))
                         (when (> x 0.0)
                           (when (zerop x)
-                            (error "This is unreachable.")))))
-      (compiler-note () (throw :note nil)))
-    (error "Unreachable code undetected.")))
+                            (error "This is unreachable."))))))
 
 (with-test (:name (:compiler :constraint-propagation :float-bounds-4
                    :LP-894498))
-  (catch :note
-    (handler-case
-        (compile nil '(lambda (x y)
+  (assert-code-deletion-note
+                     '(lambda (x y)
                         (declare (type (single-float 0.0) x)
                                  (type (single-float (0.0)) y))
                         (when (> x y)
                           (when (zerop x)
-                            (error "This is unreachable.")))))
-      (compiler-note () (throw :note nil)))
-    (error "Unreachable code undetected.")))
+                            (error "This is unreachable."))))))
 
 (with-test (:name (:compiler :constraint-propagation :var-eql-to-var-1))
-  (catch :note
-    (handler-case
-        (compile nil '(lambda (x y)
+  (assert-code-deletion-note
+                     '(lambda (x y)
                         (when (typep y 'fixnum)
                           (when (eql x y)
                             (unless (typep x 'fixnum)
                               (error "This is unreachable"))
-                            (setq y nil)))))
-      (compiler-note () (throw :note nil)))
-    (error "Unreachable code undetected.")))
+                            (setq y nil))))))
 
 (with-test (:name (:compiler :constraint-propagation :var-eql-to-var-2))
-  (catch :note
-    (handler-case
-        (compile nil '(lambda (x y)
+  (assert-code-deletion-note
+                     '(lambda (x y)
                         (when (typep y 'fixnum)
                           (when (eql y x)
                             (unless (typep x 'fixnum)
                               (error "This is unreachable"))
-                            (setq y nil)))))
-      (compiler-note () (throw :note nil)))
-    (error "Unreachable code undetected.")))
+                            (setq y nil))))))
 
 ;; Reported by John Wiseman, sbcl-devel
 ;; Subject: [Sbcl-devel] float type derivation bug?
@@ -5291,3 +5291,64 @@
                     (run-with-hint nil 42 nil maximum-extra-legs
                                    '(yyy) '(xxx) t))
                   exit-reason)))))
+
+(with-test (:name :dead-code-in-optional-dispatch)
+  (multiple-value-bind (f warningp)
+      ;; the translation of each optional entry is
+      ;;   (let ((#:g (error "nope"))) (funcall #<clambda> ...))
+      ;; but the funcall is unreachable. Since this is an artifact of how the
+      ;; lambda is converted, it should not generate a note as if in user code.
+      (compile nil '(lambda (a &optional (b (error "nope")) (c (error "nope")))
+                     (values c b a)))
+    (assert (and f (not warningp)))))
+
+(with-test (:name :nth-value-of-non-constant-N)
+  (labels ((foo (n f) (nth-value n (funcall f)))
+           (bar () (values 0 1 2 3 4 5 6 7 8 9)))
+    (assert (= (foo 5 #'bar) 5)) ; basic correctness
+    (assert (eq (foo 12 #'bar) nil))
+    (ctu:assert-no-consing (eql (foo 953 #'bar) 953))))
+
+(with-test (:name :position-derive-type-optimizer)
+  (assert-code-deletion-note
+   '(lambda (x) ; the call to POSITION can't return 4
+     (let ((i (position x #(a b c d) :test 'eq)))
+       (case i (4 'nope) (t 'okeydokey))))))
+
+;; Assert that DO-PACKED-TNS has unsurprising behavior if the body RETURNs.
+;; This isn't a test in the problem domain of CL - it's of an internal macro,
+;; and x86-64-specific not because of broken-ness, but because it uses
+;; known random TNs to play with. Printing "skipped on" for other backends
+;; would be somewhat misleading in as much as it means nothing about
+;; the correctness of the test on other architectures.
+#+x86-64
+(with-test (:name :do-packed-tn-iterator)
+  (dotimes (i (ash 1 6))
+    (labels ((make-tns (n)
+               (mapcar 'copy-structure
+                       (subseq `sb-vm::(,rax-tn ,rbx-tn ,rcx-tn) 0 n)))
+             (link (list)
+               (when list
+                 (setf (sb-c::tn-next (car list)) (link (cdr list)))
+                 (car list))))
+      (let* ((normal     (make-tns (ldb (byte 2 0) i)))
+             (restricted (make-tns (ldb (byte 2 2) i)))
+             (wired      (make-tns (ldb (byte 2 4) i)))
+             (expect     (append normal restricted wired))
+             (comp       (sb-c::make-empty-component))
+             (ir2-comp   (sb-c::make-ir2-component)))
+        (setf (sb-c::component-info comp) ir2-comp
+              (sb-c::ir2-component-normal-tns ir2-comp) (link normal)
+              (sb-c::ir2-component-restricted-tns ir2-comp) (link restricted)
+              (sb-c::ir2-component-wired-tns ir2-comp) (link wired))
+        (let* ((list)
+               (result (sb-c::do-packed-tns (tn comp 42) (push tn list))))
+          (assert (eq result 42))
+          (assert (equal expect (nreverse list))))
+        (let* ((n 0) (list)
+               (result (sb-c::do-packed-tns (tn comp 'bar)
+                         (push tn list)
+                         (if (= (incf n) 4) (return 'foo)))))
+          (assert (eq result (if (>= (length expect) 4) 'foo 'bar)))
+          (assert (equal (subseq expect 0 (min 4 (length expect)))
+                         (nreverse list))))))))

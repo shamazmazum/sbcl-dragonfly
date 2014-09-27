@@ -13,19 +13,12 @@
 
 (!begin-collecting-cold-init-forms)
 
-(defvar *special-form-constantp-funs*)
-(declaim (type hash-table *special-form-constantp-funs*))
+(defvar **special-form-constantp-tests**)
+(declaim (type hash-table **special-form-constantp-tests**))
 (!cold-init-forms
-  (setf *special-form-constantp-funs* (make-hash-table)))
+  (setf **special-form-constantp-tests** (make-hash-table)))
 
-(defvar *special-form-constant-form-value-funs*)
-(declaim (type hash-table *special-form-constant-form-value-funs*))
-(!cold-init-forms
-  (setf *special-form-constant-form-value-funs* (make-hash-table)))
-
-(defvar *special-constant-variables*)
-(!cold-init-forms
-  (setf *special-constant-variables* nil))
+(!defvar *special-constant-variables* nil)
 
 (defun %constantp (form environment envp)
   (let ((form (if envp
@@ -69,14 +62,14 @@
        form))))
 
 (defun constant-special-form-p (form environment envp)
-  (let ((fun (gethash (car form) *special-form-constantp-funs*)))
+  (let ((fun (gethash (car form) **special-form-constantp-tests**)))
     (when fun
-      (funcall fun form environment envp))))
+      (funcall (car fun) form environment envp))))
 
 (defun constant-special-form-value (form environment envp)
-  (let ((fun (gethash (car form) *special-form-constant-form-value-funs*)))
+  (let ((fun (gethash (car form) **special-form-constantp-tests**)))
     (if fun
-        (funcall fun form environment envp)
+        (funcall (cdr fun) form environment envp)
         (error "Not a constant-foldable special form: ~S" form))))
 
 (defun constant-special-variable-p (name)
@@ -159,12 +152,11 @@ constantness of the FORM in ENVIRONMENT."
                                          lambda-list)))
                    ,body))))
       `(progn
-         (setf (gethash ',operator *special-form-constantp-funs*)
-               (lambda (,form ,environment ,envp)
-                 ,(frob test)))
-         (setf (gethash ',operator *special-form-constant-form-value-funs*)
-               (lambda (,form ,environment ,envp)
-                 ,(frob eval)))))))
+         (setf (gethash ',operator **special-form-constantp-tests**)
+               (cons (lambda (,form ,environment ,envp)
+                       ,(frob test))
+                     (lambda (,form ,environment ,envp)
+                       ,(frob eval))))))))
 
 (!cold-init-forms
  (defconstantp quote (value)

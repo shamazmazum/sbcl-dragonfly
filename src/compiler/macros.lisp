@@ -13,21 +13,6 @@
 
 (declaim (special *compiler-error-context*))
 
-;;; An INLINEP value describes how a function is called. The values
-;;; have these meanings:
-;;;     NIL     No declaration seen: do whatever you feel like, but don't
-;;;             dump an inline expansion.
-;;; :NOTINLINE  NOTINLINE declaration seen: always do full function call.
-;;;    :INLINE  INLINE declaration seen: save expansion, expanding to it
-;;;             if policy favors.
-;;; :MAYBE-INLINE
-;;;             Retain expansion, but only use it opportunistically.
-;;;             :MAYBE-INLINE is quite different from :INLINE. As explained
-;;;             by APD on #lisp 2005-11-26: "MAYBE-INLINE lambda is
-;;;             instantiated once per component, INLINE - for all
-;;;             references (even under #'without FUNCALL)."
-(deftype inlinep () '(member :inline :maybe-inline :notinline nil))
-
 ;;;; source-hacking defining forms
 
 ;;; Parse a DEFMACRO-style lambda-list, setting things up so that a
@@ -287,9 +272,9 @@
 (defun parse-deftransform (lambda-list node-var error-form)
   (multiple-value-bind (req opt restp rest keyp keys allowp)
       (parse-lambda-list lambda-list)
-    (let* ((all-dummies (make-gensym-list 3))
-           (dummies all-dummies)
-           (tail (pop dummies))
+    (let* ((tail (make-symbol "ARGS"))
+           (dummies (make-gensym-list 2))
+           (all-dummies (cons tail dummies))
            (keys (mapcar (lambda (spec)
                            (multiple-value-bind (key var)
                                (if (atom spec)
@@ -306,8 +291,7 @@
         ;; The way this code checks for mandatory args is to verify that
         ;; the last positional arg is not null (it should be an LVAR).
         ;; But somebody could pedantically declare IGNORE on the last arg
-        ;; (though we typically make them IGNORABLE), so bind a dummy for
-        ;; it and then bind from the dummy.
+        ;; so bind a dummy for it and then bind from the dummy.
         (mapl (lambda (args)
                 (cond ((cdr args)
                        (binds `(,(car args) (pop ,tail))))
@@ -334,16 +318,16 @@
                       ,error-form))))
         (when restp
           (binds `(,rest ,tail)))
-        ;; Return list of bindings and list of ignorables. Actually the caller
-        ;; should make *all* bindings ignorable but might need to know the
-        ;; symbols from the lambda-list per se.
+        ;; Return list of bindings, the list of user-specified symbols,
+        ;; and the list of gensyms to be declared ignorable.
         (values (append (binds)
                         (mapcar (lambda (k)
                                   `(,(car k)
                                      (find-keyword-lvar ,tail ',(cdr k))))
                                 keys))
                 (append (nset-difference (mapcar #'car (binds)) all-dummies)
-                        (mapcar #'car keys)))))))
+                        (mapcar #'car keys))
+                (intersection (mapcar #'car (binds)) (cdr all-dummies)))))))
 ) ; EVAL-WHEN
 
 ;;;; DEFTRANSFORM
@@ -401,15 +385,17 @@
 ;;;             Name with the specified transform definition function. This
 ;;;             may be later instantiated with %DEFTRANSFORM.
 ;;;   :IMPORTANT
-;;;           - If supplied and non-NIL, note this transform as ``important,''
-;;;             which means efficiency notes will be generated when this
-;;;             transform fails even if INHIBIT-WARNINGS=SPEED (but not if
-;;;             INHIBIT-WARNINGS>SPEED).
+;;;           - If the transform fails and :IMPORTANT is
+;;;               NIL,       then never print an efficiency note.
+;;;               :SLIGHTLY, then print a note if SPEED>=INHIBIT-WARNINGS.
+;;;               T,         then print a note if SPEED>INHIBIT-WARNINGS.
+;;;             :SLIGHTLY is the default.
 (defmacro deftransform (name (lambda-list &optional (arg-types '*)
                                           (result-type '*)
                                           &key result policy node defun-only
-                                          eval-name important)
+                                          eval-name (important :slightly))
                              &body body-decls-doc)
+  (declare (type (member nil :slightly t) important))
   (when (and eval-name defun-only)
     (error "can't specify both DEFUN-ONLY and EVAL-NAME"))
   (multiple-value-bind (body decls doc) (parse-body body-decls-doc)
@@ -448,7 +434,7 @@
                      `'(function ,arg-types ,result-type))
                 (lambda ,@stuff)
                 ,doc
-                ,(if important t nil))))))))
+                ,important)))))))
 
 ;;;; DEFKNOWN and DEFOPTIMIZER
 
@@ -514,32 +500,45 @@
 ;;; the rest of the optimizer function's lambda-list. LTN-ANNOTATE
 ;;; methods are passed an additional POLICY argument, and IR2-CONVERT
 ;;; methods are passed an additional IR2-BLOCK argument.
-(defmacro defoptimizer (what (lambda-list &optional (n-node (sb!xc:gensym))
-                                          &rest vars)
-                             &body body)
-  (flet ((function-name (name)
-           (etypecase name
-             (symbol name)
-             ((cons (eql setf) (cons symbol null))
-              (symbolicate (car name) "-" (cadr name))))))
-   (let ((name (if (symbolp what)
-                   what
-                   (symbolicate (function-name (first what))
-                                "-" (second what) "-OPTIMIZER"))))
-
-     (let ((binds (parse-deftransform lambda-list n-node
-                                      `(return-from ,name nil))))
-       `(progn
-          (defun ,name (,n-node ,@vars)
-            (declare (ignorable ,@vars))
-            (let* ,binds
-              (declare (ignorable ,@(mapcar #'car binds)))
-              ,@body))
-          ,@(when (consp what)
-              `((setf (,(let ((*package* (symbol-package 'fun-info)))
+(defmacro defoptimizer (what (lambda-list
+                              &optional (node (sb!xc:gensym) node-p)
+                              &rest vars)
+                        &body body)
+  (binding* ((name
+              (flet ((function-name (name)
+                       (etypecase name
+                         (symbol name)
+                         ((cons (eql setf) (cons symbol null))
+                          (symbolicate (car name) "-" (cadr name))))))
+                (if (symbolp what)
+                    what
+                    (symbolicate (function-name (first what))
+                                 "-" (second what) "-OPTIMIZER"))))
+             ((forms decls) (parse-body body :doc-string-allowed nil))
+             ((var-decls more-decls) (extract-var-decls decls vars))
+             ;; In case the BODY declares IGNORE of the formal NODE var,
+             ;; we rebind it from N-NODE and never reference it from BINDS.
+             (n-node (make-symbol "NODE"))
+             ((binds lambda-vars gensyms)
+              (parse-deftransform lambda-list n-node
+                                  `(return-from ,name nil))))
+    (declare (ignore lambda-vars))
+    `(progn
+       ;; We can't stuff the BINDS as &AUX vars into the lambda list
+       ;; because there can be a RETURN-FROM in there.
+       (defun ,name (,n-node ,@vars)
+         ,@(if var-decls (list var-decls))
+         (let* (,@binds ,@(if node-p `((,node ,n-node))))
+           ;; Syntax requires naming NODE even if undesired if VARS
+           ;; are present, so in that case make NODE ignorable.
+           (declare (ignorable ,@(if (and vars node-p) `(,node))
+                               ,@gensyms))
+           ,@more-decls ,@forms))
+       ,@(when (consp what)
+           `((setf (,(let ((*package* (symbol-package 'fun-info)))
                           (symbolicate "FUN-INFO-" (second what)))
                        (fun-info-or-lose ',(first what)))
-                      #',name))))))))
+                      #',name))))))
 
 ;;;; IR groveling macros
 
@@ -868,52 +867,34 @@
 #!-sb-fluid (declaim (inline find-in position-in))
 
 ;;; Find ELEMENT in a null-terminated LIST linked by the accessor
-;;; function NEXT. KEY, TEST and TEST-NOT are the same as for generic
-;;; sequence functions.
+;;; function NEXT. KEY and TEST are the same as for generic sequence functions.
 (defun find-in (next
                 element
                 list
                 &key
                 (key #'identity)
-                (test #'eql test-p)
-                (test-not #'eql not-p))
-  (declare (type function next key test test-not))
-  (when (and test-p not-p)
-    (error "It's silly to supply both :TEST and :TEST-NOT arguments."))
-  (if not-p
-      (do ((current list (funcall next current)))
-          ((null current) nil)
-        (unless (funcall test-not (funcall key current) element)
-          (return current)))
-      (do ((current list (funcall next current)))
-          ((null current) nil)
-        (when (funcall test (funcall key current) element)
-          (return current)))))
+                (test #'eql))
+  (declare (type function next key test))
+  (do ((current list (funcall next current)))
+      ((null current) nil)
+    (when (funcall test (funcall key current) element)
+      (return current))))
 
 ;;; Return the position of ELEMENT (or NIL if absent) in a
-;;; null-terminated LIST linked by the accessor function NEXT. KEY,
-;;; TEST and TEST-NOT are the same as for generic sequence functions.
+;;; null-terminated LIST linked by the accessor function NEXT.
+;;; KEY and TEST are the same as for generic sequence functions.
 (defun position-in (next
                     element
                     list
                     &key
                     (key #'identity)
-                    (test #'eql test-p)
-                    (test-not #'eql not-p))
-  (declare (type function next key test test-not))
-  (when (and test-p not-p)
-    (error "It's silly to supply both :TEST and :TEST-NOT arguments."))
-  (if not-p
-      (do ((current list (funcall next current))
-           (i 0 (1+ i)))
-          ((null current) nil)
-        (unless (funcall test-not (funcall key current) element)
-          (return i)))
-      (do ((current list (funcall next current))
-           (i 0 (1+ i)))
-          ((null current) nil)
-        (when (funcall test (funcall key current) element)
-          (return i)))))
+                    (test #'eql))
+  (declare (type function next key test))
+  (do ((current list (funcall next current))
+       (i 0 (1+ i)))
+      ((null current) nil)
+    (when (funcall test (funcall key current) element)
+      (return i))))
 
 
 ;;; KLUDGE: This is expanded out twice, by cut-and-paste, in a

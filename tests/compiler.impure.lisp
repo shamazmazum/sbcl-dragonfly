@@ -447,7 +447,7 @@
 ;;; bugs 178, 199: compiler failed to compile a call of a function
 ;;; with a hairy type
 (defun bug178 (x)
-      (funcall (the function (the standard-object x))))
+  (funcall (the function (the standard-object x))))
 
 (defun bug199-aux (f)
   (eq nil (funcall f)))
@@ -455,6 +455,15 @@
 (defun bug199 (f x)
   (declare (type (and function (satisfies bug199-aux)) f))
   (funcall f x))
+
+(test-util:with-test (:name (declaim &optional &rest :bogus style-warning))
+  (assert-no-signal
+   (ctu:file-compile
+    "(declaim (ftype (function (symbol &optional t &rest t)) foo))
+     (defun foo (x &optional y &rest z)
+       (declare (ignore x y z)))"
+    :load nil)
+   style-warning))
 
 ;;; check non-toplevel DEFMACRO
 (defvar *defmacro-test-status* nil)
@@ -2504,5 +2513,40 @@
              (compile nil '(lambda () (weird-fn 2 'foo :magic 11))))))
     (assert (string= (funcall f)
                      "Weird transform answer is 14"))))
+
+(defun skip-1-passthrough (a b sb-int:&more context count)
+  (declare (ignore a b))
+  (multiple-value-call 'list
+    'start
+    (sb-c::%more-arg-values context 1 (1- (truly-the fixnum count)))
+    'end))
+(defun skip-2-passthrough (a b sb-int:&more context count)
+  (declare (ignore a b))
+  (multiple-value-call 'list
+    'start
+    (sb-c::%more-arg-values context 2 (- (truly-the fixnum count) 2))
+    'end))
+(defun skip-n-passthrough (n-skip n-copy sb-int:&more context count)
+  (assert (>= count (+ n-copy n-skip))) ; prevent crashes
+  (multiple-value-call 'list
+    'start
+    (sb-c::%more-arg-values context n-skip n-copy)
+    'end))
+
+;; %MORE-ARG-VALUES was wrong on x86 and x86-64 with nonzero 'skip'.
+;; It's entirely possible that other backends are also not working.
+(test-util:with-test (:name more-arg-fancy)
+  (assert (equal (skip-1-passthrough 0 0 'a 'b 'c 'd 'e 'f)
+                 '(start b c d e f end)))
+  (assert (equal (skip-2-passthrough 0 0 'a 'b 'c 'd 'e 'f)
+                 '(start c d e f end)))
+  (assert (equal (skip-n-passthrough 1 5 'a 'b 'c 'd 'e 'f)
+                 '(start b c d e f end)))
+  (assert (equal (skip-n-passthrough 1 5 'a 'b 'c 'd 'e 'f 'g)
+                 '(start b c d e f end)))
+  (assert (equal (skip-n-passthrough 2 5 'a 'b 'c 'd 'e 'f 'g)
+                 '(start c d e f g end)))
+  (assert (equal (skip-n-passthrough 2 5 'a 'b 'c 'd 'e 'f 'g 'h)
+                 '(start c d e f g end))))
 
 ;;; success

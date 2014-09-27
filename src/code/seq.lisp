@@ -150,6 +150,34 @@
                  (declare (ignorable ,sequence))
                  ,array-form)))))
 
+;; Same as above, but don't assume that ARRAYP implies VECTORP,
+;; and call SEQUENCEP only after checking for not LISTP and not VECTORP.
+;; This is for dispatching within sequence functions that have the
+;; EXPLICIT-CHECK attribute. [Because there is no way to have the compiler
+;; insert checks for a subset of arguments, it is inconvenient to declare
+;; things like DELETE-IF with explicit-check to suppress checking of the
+;; 'sequence' because then you have to manually check all other arguments.]
+(sb!xc:defmacro seq-dispatch-checking
+    (sequence list-form array-form &optional other-form)
+  `(if (listp ,sequence)
+       (let ((,sequence (truly-the list ,sequence)))
+         (declare (ignorable ,sequence))
+         ,list-form)
+       ,@(if other-form
+             `((if (vectorp ,sequence)
+                   (let ((,sequence (truly-the vector ,sequence)))
+                     (declare (ignorable ,sequence))
+                     ,array-form)
+                   ;; This could assert (THE EXTENDED-SEQUENCE ,sequence)
+                   ;; for a slight win, however the error string would be wrong.
+                   ;; It needs to be "<x> is not a SEQUENCE", not "<x> is not
+                   ;; an EXTENDED-SEQUENCE".
+                   (let ((,sequence (the sequence ,sequence)))
+                     ,other-form)))
+             `((let ((,sequence (the vector ,sequence)))
+                 (declare (ignorable ,sequence))
+                 ,array-form)))))
+
 (sb!xc:defmacro %make-sequence-like (sequence length)
   #!+sb-doc
   "Return a sequence of the same type as SEQUENCE and the given LENGTH."
@@ -310,7 +338,7 @@
 
 (defun length (sequence)
   #!+sb-doc "Return an integer that is the length of SEQUENCE."
-  (seq-dispatch sequence
+  (seq-dispatch-checking sequence
                 (length sequence)
                 (length sequence)
                 (sb!sequence:length sequence)))
@@ -384,16 +412,14 @@
                       (make-array length :element-type etype)))))
              (t (sequence-type-too-hairy (type-specifier type)))))
           ((and (csubtypep type (specifier-type 'sequence))
-                (find-class adjusted-type nil))
-           (let* ((class (find-class adjusted-type nil)))
-             (unless (sb!mop:class-finalized-p class)
-               (sb!mop:finalize-inheritance class))
-             (if iep
-                 (sb!sequence:make-sequence-like
-                  (sb!mop:class-prototype class) length
-                  :initial-element initial-element)
-                 (sb!sequence:make-sequence-like
-                  (sb!mop:class-prototype class) length))))
+                (awhen (find-class adjusted-type nil)
+                  (let ((prototype (sb!mop:class-prototype
+                                    (sb!pcl:ensure-class-finalized it))))
+                    (if iep
+                        (sb!sequence:make-sequence-like
+                         prototype length :initial-element initial-element)
+                        (sb!sequence:make-sequence-like
+                         prototype length))))))
           (t (bad-sequence-type-error (type-specifier type))))))
 
 ;;;; SUBSEQ
@@ -744,10 +770,17 @@ many elements are copied."
 (defun reverse (sequence)
   #!+sb-doc
   "Return a new sequence containing the same elements but in reverse order."
-  (seq-dispatch sequence
+  (seq-dispatch-checking sequence
     (list-reverse* sequence)
     (vector-reverse* sequence)
-    (sb!sequence:reverse sequence)))
+    ;; The type deriver says that LIST => LIST and VECTOR => VECTOR
+    ;; but does not claim to know anything about extended-sequences.
+    ;; So this could theoretically return any subtype of SEQUENCE
+    ;; given an EXTENDED-SEQUENCE as input. But fndb says this returns
+    ;; a CONSED-SEQUENCE, which precludes non-simple vectors.
+    ;; But a CLOS sequence can apparently decide to return a LIST when
+    ;; reversed. [Is that too weird? Make this EXTENDED-SEQUENCE maybe?]
+    (the consed-sequence (values (sb!sequence:reverse sequence)))))
 
 ;;; internal frobs
 
@@ -791,10 +824,13 @@ many elements are copied."
   #!+sb-doc
   "Return a sequence of the same elements in reverse order; the argument
    is destroyed."
-  (seq-dispatch sequence
+  (seq-dispatch-checking sequence
     (list-nreverse* sequence)
     (vector-nreverse* sequence)
-    (sb!sequence:nreverse sequence)))
+    ;; The type deriver for this is 'result-type-first-arg',
+    ;; meaning it should return definitely an EXTENDED-SEQUENCE
+    ;; and not a list or vector.
+    (the extended-sequence (values (sb!sequence:nreverse sequence)))))
 
 ;;;; CONCATENATE
 
@@ -803,25 +839,25 @@ many elements are copied."
   "Executes BODY with ELEMENT subsequently bound to each element of
   SEQUENCE, then returns RETURN."
   (multiple-value-bind (forms decls) (parse-body body :doc-string-allowed nil)
-    (let ((s sequence)
-          (sequence (gensym "SEQUENCE")))
-      `(block nil
-        (let ((,sequence ,s))
-          (seq-dispatch ,sequence
-            (dolist (,element ,sequence ,return) ,@body)
-            (do-vector-data (,element ,sequence ,return) ,@body)
-            (multiple-value-bind (state limit from-end step endp elt)
-                (sb!sequence:make-sequence-iterator ,sequence)
-              (do ((state state (funcall step ,sequence state from-end)))
-                  ((funcall endp ,sequence state limit from-end)
-                   (let ((,element nil))
-                     ,@(filter-dolist-declarations decls)
-                     ,element
-                     ,return))
-                (let ((,element (funcall elt ,sequence state)))
-                  ,@decls
-                  (tagbody
-                     ,@forms))))))))))
+    (once-only ((sequence sequence))
+      (with-unique-names (state limit from-end step endp elt)
+        `(block nil
+           (seq-dispatch ,sequence
+             (dolist (,element ,sequence ,return) ,@body)
+             (do-vector-data (,element ,sequence ,return) ,@body)
+             (multiple-value-bind (,state ,limit ,from-end ,step ,endp ,elt)
+                 (sb!sequence:make-sequence-iterator ,sequence)
+               (do ((,state ,state (funcall ,step ,sequence ,state ,from-end)))
+                   ((funcall ,endp ,sequence ,state ,limit ,from-end)
+                    (let ((,element nil))
+                      ,@(filter-dolist-declarations decls)
+                      (declare (ignorable ,element))
+                      ,return))
+                 (let ((,element (funcall ,elt ,sequence ,state)))
+                   ,@decls
+                   (tagbody
+                      ,@forms))))))))))
+
 
 (defun concatenate (output-type-spec &rest sequences)
   #!+sb-doc
@@ -882,8 +918,11 @@ many elements are copied."
         ((csubtypep type (specifier-type 'vector))
          (concat-to-simple* output-type-spec sequences))
         ((and (csubtypep type (specifier-type 'sequence))
-              (find-class output-type-spec nil))
-         (coerce (concat-to-simple* 'vector sequences) output-type-spec))
+              (awhen (find-class output-type-spec nil)
+                (apply #'sb!sequence:concatenate
+                       (sb!mop:class-prototype
+                        (sb!pcl:ensure-class-finalized it))
+                       sequences))))
         (t
          (bad-sequence-type-error output-type-spec))))))
 
@@ -910,6 +949,7 @@ many elements are copied."
                   result))))
   (def %concatenate-to-string character)
   (def %concatenate-to-base-string base-char))
+
 
 ;;;; MAP
 
@@ -1013,27 +1053,6 @@ many elements are copied."
         (declare (truly-dynamic-extent #'f))
         (%map-for-effect #'f sequences))
       result)))
-(defun %map-to-sequence (result-type fun sequences)
-  (declare (type function fun)
-           (type list sequences))
-  (let ((min-len 0))
-    (flet ((f (&rest args)
-             (declare (truly-dynamic-extent args))
-             (declare (ignore args))
-             (incf min-len)))
-      (declare (truly-dynamic-extent #'f))
-      (%map-for-effect #'f sequences))
-    (let ((result (make-sequence result-type min-len)))
-      (multiple-value-bind (state limit from-end step endp elt setelt)
-          (sb!sequence:make-sequence-iterator result)
-        (declare (ignore limit endp elt))
-        (flet ((f (&rest args)
-                 (declare (truly-dynamic-extent args))
-                 (funcall setelt (apply fun args) result state)
-                 (setq state (funcall step result state from-end))))
-          (declare (truly-dynamic-extent #'f))
-          (%map-for-effect #'f sequences)))
-      result)))
 
 ;;; %MAP is just MAP without the final just-to-be-sure check that
 ;;; length of the output sequence matches any length specified
@@ -1050,8 +1069,11 @@ many elements are copied."
                  ((csubtypep type (specifier-type 'vector))
                   (%map-to-vector result-type really-fun sequences))
                  ((and (csubtypep type (specifier-type 'sequence))
-                       (find-class result-type nil))
-                  (%map-to-sequence result-type really-fun sequences))
+                       (awhen (find-class result-type nil)
+                         (apply #'sb!sequence:map
+                                (sb!mop:class-prototype
+                                 (sb!pcl:ensure-class-finalized it))
+                                really-fun sequences))))
                  (t
                   (bad-sequence-type-error result-type)))))
            (slow-map ()

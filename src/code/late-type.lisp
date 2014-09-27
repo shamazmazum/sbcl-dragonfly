@@ -38,8 +38,7 @@
 ;;; chance to run, instead of immediately returning NIL, T.
 (defun delegate-complex-subtypep-arg2 (type1 type2)
   (let ((subtypep-arg1
-         (type-class-complex-subtypep-arg1
-          (type-class-info type1))))
+         (type-class-complex-subtypep-arg1 (type-class-info type1))))
     (if subtypep-arg1
         (funcall subtypep-arg1 type1 type2)
         (values nil t))))
@@ -51,17 +50,15 @@
 
 (defun contains-unknown-type-p (ctype)
   (cond ((unknown-type-p ctype) t)
-        ((intersection-type-p ctype)
-         (some #'contains-unknown-type-p (intersection-type-types ctype)))
-        ((union-type-p ctype)
-         (some #'contains-unknown-type-p (union-type-types ctype)))
+        ((compound-type-p ctype)
+         (some #'contains-unknown-type-p (compound-type-types ctype)))
         ((negation-type-p ctype)
          (contains-unknown-type-p (negation-type-type ctype)))))
 
 ;;; This is used by !DEFINE-SUPERCLASSES to define the SUBTYPE-ARG1
 ;;; method. INFO is a list of conses
 ;;;   (SUPERCLASS-CLASS . {GUARD-TYPE-SPECIFIER | NIL}).
-(defun !has-superclasses-complex-subtypep-arg1 (type1 type2 info)
+(defun has-superclasses-complex-subtypep-arg1 (type1 type2 info)
   ;; If TYPE2 might be concealing something related to our class
   ;; hierarchy
   (if (type-might-contain-other-types-p type2)
@@ -110,7 +107,7 @@
                             ',specs)))
          (setf (type-class-complex-subtypep-arg1 ,type-class)
                (lambda (type1 type2)
-                 (!has-superclasses-complex-subtypep-arg1 type1 type2 ,info)))
+                 (has-superclasses-complex-subtypep-arg1 type1 type2 ,info)))
          (setf (type-class-complex-subtypep-arg2 ,type-class)
                #'delegate-complex-subtypep-arg2)
          (setf (type-class-complex-intersection2 ,type-class)
@@ -136,9 +133,9 @@
 (defstruct (key-info #-sb-xc-host (:pure t)
                      (:copier nil))
   ;; the key (not necessarily a keyword in ANSI Common Lisp)
-  (name (missing-arg) :type symbol)
+  (name (missing-arg) :type symbol :read-only t)
   ;; the type of the argument value
-  (type (missing-arg) :type ctype))
+  (type (missing-arg) :type ctype :read-only t))
 
 (!define-type-method (values :simple-subtypep :complex-subtypep-arg1)
                      (type1 type2)
@@ -189,12 +186,10 @@
 ;;; a flag that we can bind to cause complex function types to be
 ;;; unparsed as FUNCTION. This is useful when we want a type that we
 ;;; can pass to TYPEP.
-(defvar *unparse-fun-type-simplify*)
+(!defvar *unparse-fun-type-simplify* nil)
 ;;; A flag to prevent TYPE-OF calls by user applications from returning
 ;;; (NOT x). TYPE-SPECIFIER usually allows it to preserve information.
-(defvar *unparse-allow-negation*)
-(!cold-init-forms (setq *unparse-fun-type-simplify* nil
-                        *unparse-allow-negation* t))
+(!defvar *unparse-allow-negation* t)
 
 (!define-type-method (function :negate) (type)
   (make-negation-type :type type))
@@ -702,9 +697,7 @@
 ;;; The return convention seems to be analogous to
 ;;; TYPES-EQUAL-OR-INTERSECT. -- WHN 19990910.
 (defun-cached (values-type-union :hash-function #'type-cache-hash
-                                 :hash-bits 8
-                                 :default nil
-                                 :init-wrapper !cold-init-forms)
+                                 :hash-bits 8)
     ((type1 eq) (type2 eq))
   (declare (type ctype type1 type2))
   (cond ((or (eq type1 *wild-type*) (eq type2 *wild-type*)) *wild-type*)
@@ -714,9 +707,7 @@
          (values (values-type-op type1 type2 #'type-union #'min)))))
 
 (defun-cached (values-type-intersection :hash-function #'type-cache-hash
-                                        :hash-bits 8
-                                        :default (values nil)
-                                        :init-wrapper !cold-init-forms)
+                                        :hash-bits 8)
     ((type1 eq) (type2 eq))
   (declare (type ctype type1 type2))
   (cond ((eq type1 *wild-type*)
@@ -756,9 +747,7 @@
 ;;; VALUES types
 (defun-cached (values-subtypep :hash-function #'type-cache-hash
                                :hash-bits 8
-                               :values 2
-                               :default (values nil :empty)
-                               :init-wrapper !cold-init-forms)
+                               :values 2)
     ((type1 eq) (type2 eq))
   (declare (type ctype type1 type2))
   (cond ((or (eq type2 *wild-type*) (eq type2 *universal-type*)
@@ -799,9 +788,7 @@
 (defun-cached (csubtypep :hash-function #'type-cache-hash
                          :hash-bits 10
                          :memoizer memoize
-                         :values 2
-                         :default (values nil :empty)
-                         :init-wrapper !cold-init-forms)
+                         :values 2)
               ((type1 eq) (type2 eq))
   (declare (type ctype type1 type2))
   (cond ((or (eq type1 type2)
@@ -833,9 +820,7 @@
 (defun-cached (type= :hash-function #'type-cache-hash
                      :hash-bits 11
                      :memoizer memoize
-                     :values 2
-                     :default (values nil :empty)
-                     :init-wrapper !cold-init-forms)
+                     :values 2)
               ((type1 eq) (type2 eq))
   (declare (type ctype type1 type2))
   (if (eq type1 type2)
@@ -875,8 +860,7 @@
 ;;; unless we find no other way to represent the result.
 (defun-cached (type-union2 :hash-function #'type-cache-hash
                            :hash-bits 8
-                           :memoizer memoize
-                           :init-wrapper !cold-init-forms)
+                           :memoizer memoize)
               ((type1 eq) (type2 eq))
   ;; KLUDGE: This was generated from TYPE-INTERSECTION2 by Ye Olde Cut And
   ;; Paste technique of programming. If it stays around (as opposed to
@@ -941,9 +925,7 @@
 (defun-cached (type-intersection2 :hash-function #'type-cache-hash
                                   :hash-bits 9
                                   :memoizer memoize
-                                  :values 1
-                                  :default nil
-                                  :init-wrapper !cold-init-forms)
+                                  :values 1)
               ((type1 eq) (type2 eq))
   (declare (type ctype type1 type2))
   (if (eq type1 type2)
@@ -1002,18 +984,14 @@
 
 (defun-cached (type-negation :hash-function #'type-hash-value
                              :hash-bits 8
-                             :values 1
-                             :default nil
-                             :init-wrapper !cold-init-forms)
+                             :values 1)
               ((type eq))
   (declare (type ctype type))
   (funcall (type-class-negate (type-class-info type)) type))
 
 (defun-cached (type-singleton-p :hash-function #'type-hash-value
                              :hash-bits 8
-                             :values 2
-                             :default (values nil t)
-                             :init-wrapper !cold-init-forms)
+                             :values 2)
               ((type eq))
   (declare (type ctype type))
   (let ((function (type-class-singleton-p (type-class-info type))))
@@ -1620,7 +1598,7 @@
          (neltype (array-type-element-type ntype)))
     (if (and (eql ndims '*) (null ncomplexp)
              (eql neltype *wild-type*) (eql nseltype *wild-type*))
-        (make-array-type :dimensions (array-type-dimensions type1)
+        (make-array-type (array-type-dimensions type1)
                          :complexp t
                          :element-type (array-type-element-type type1)
                          :specialized-element-type (array-type-specialized-element-type type1)))))
@@ -2441,7 +2419,23 @@ used for a COMPLEX component.~:@>"
   ;; FIXME (and hint to PFD): we're vulnerable here to attacks of the
   ;; form "are (AND ARRAY (NOT (ARRAY T))) and (OR (ARRAY BIT) (ARRAY
   ;; NIL) (ARRAY CHAR) ...) equivalent?" -- CSR, 2003-12-10
-  (make-negation-type :type type))
+  ;; A symptom of the aforementioned is that the following are not TYPE=
+  ;;   (AND (VECTOR T) (NOT SIMPLE-ARRAY)) ; an ARRAY-TYPE
+  ;;   (AND (VECTOR T) (NOT SIMPLE-VECTOR)) ; an INTERSECTION-TYPE
+  ;; even though (VECTOR T) makes it so that the (NOT) clause in each can
+  ;; only provide one additional bit of information: that the vector
+  ;; is complex as opposed to simple. The rank and element-type are fixed.
+  (if (and (eq (array-type-dimensions type) '*)
+           (eq (array-type-complexp type) 't)
+           (eq (array-type-element-type type) *wild-type*))
+      ;; (NOT <hairy-array>) = either SIMPLE-ARRAY or (NOT ARRAY).
+      ;; This is deliberately asymmetric - trying to say that NOT simple-array
+      ;; equals hairy-array leads to infinite recursion.
+      (type-union (make-array-type '* :complexp nil
+                                   :element-type *wild-type*)
+                  (make-negation-type
+                   :type (make-array-type '* :element-type *wild-type*)))
+      (make-negation-type :type type)))
 
 (!define-type-method (array :unparse) (type)
   (let* ((dims (array-type-dimensions type))
@@ -2719,8 +2713,7 @@ used for a COMPLEX component.~:@>"
                    (not (eq result-eltype :incompatible))
                    (unite-array-types-supertypes-compatible-p
                     eltype-supertype complexp-supertype dimensions-supertype))
-          (make-array-type
-           :dimensions result-dimensions
+          (make-array-type result-dimensions
            :complexp result-complexp
            :element-type result-eltype
            :specialized-element-type result-stype))))))
@@ -2736,12 +2729,11 @@ used for a COMPLEX component.~:@>"
             (eltype2 (array-type-element-type type2))
             (stype1 (array-type-specialized-element-type type1))
             (stype2 (array-type-specialized-element-type type2)))
-        (make-array-type
-         :dimensions (cond ((eq dims1 '*) dims2)
-                           ((eq dims2 '*) dims1)
-                           (t
-                            (mapcar (lambda (x y) (if (eq x '*) y x))
-                                    dims1 dims2)))
+        (make-array-type (cond ((eq dims1 '*) dims2)
+                               ((eq dims2 '*) dims1)
+                               (t
+                                (mapcar (lambda (x y) (if (eq x '*) y x))
+                                        dims1 dims2)))
          :complexp (if (eq complexp1 :maybe) complexp2 complexp1)
          :element-type (cond
                          ((eq eltype1 *wild-type*) eltype2)
@@ -2810,10 +2802,8 @@ used for a COMPLEX component.~:@>"
 
 (!define-type-method (member :unparse) (type)
   (let ((members (member-type-members type)))
-    (cond
-      ((equal members '(nil)) 'null)
-      ((type= type (specifier-type 'standard-char)) 'standard-char)
-      (t `(member ,@members)))))
+    (cond ((equal members '(nil)) 'null)
+          (t `(member ,@members)))))
 
 (!define-type-method (member :singleton-p) (type)
   (if (eql 1 (member-type-size type))
@@ -3435,7 +3425,8 @@ used for a COMPLEX component.~:@>"
     ((type= type (specifier-type 'standard-char)) 'standard-char)
     (t
      ;; Unparse into either MEMBER or CHARACTER-SET. We use MEMBER if there
-     ;; are at most as many characters than there are character code ranges.
+     ;; are at most as many characters as there are character code ranges.
+     ;; (basically saying to use MEMBER if each range is one character)
      (let* ((pairs (character-set-type-pairs type))
             (count (length pairs))
             (chars (loop named outer
@@ -3604,7 +3595,7 @@ used for a COMPLEX component.~:@>"
   (let ((eltype (if (eq element-type '*)
                     *wild-type*
                     (specifier-type element-type))))
-    (make-array-type :dimensions (canonical-array-dimensions dimensions)
+    (make-array-type (canonical-array-dimensions dimensions)
                      :complexp :maybe
                      :element-type eltype
                      :specialized-element-type (%upgraded-array-element-type
@@ -3615,7 +3606,7 @@ used for a COMPLEX component.~:@>"
   (let ((eltype (if (eq element-type '*)
                     *wild-type*
                     (specifier-type element-type))))
-   (make-array-type :dimensions (canonical-array-dimensions dimensions)
+   (make-array-type (canonical-array-dimensions dimensions)
                     :complexp nil
                     :element-type eltype
                     :specialized-element-type (%upgraded-array-element-type
@@ -3930,7 +3921,7 @@ used for a COMPLEX component.~:@>"
 
 ;;; Standard list representation of sets. Use CL:* for the universe.
 (defun list-abstract-type-function (type over &key under (overapproximate t))
-  (declare (inline generic-abstract-walk-type))
+  (declare (inline generic-abstract-type-function))
   (generic-abstract-type-function
    type overapproximate
    #'union #'intersection #'set-difference

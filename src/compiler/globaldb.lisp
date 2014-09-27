@@ -54,17 +54,18 @@
     ;; TRAVERSE will walk across more cons cells than RECURSE will descend.
     ;; That's why this isn't just one self-recursive function.
     (labels ((traverse (accumulator x length-limit)
-             (declare (fixnum length-limit))
-             (cond ((atom x) (sb!int:mix (sxhash x) accumulator))
-                   ((zerop length-limit) accumulator)
-                   (t (traverse (sb!int:mix (recurse (car x) 4) accumulator)
-                                (cdr x) (1- length-limit)))))
-           (recurse (x depthoid) ; depthoid = a blend of level and length
-             (declare (fixnum depthoid))
-             (cond ((atom x) (sxhash x))
-                   ((zerop depthoid) #xdeadbeef)
-                   (t (sb!int:mix (recurse (car x) (1- depthoid))
-                                  (recurse (cdr x) (1- depthoid)))))))
+               (declare (fixnum length-limit))
+               (cond ((atom x) (sb!int:mix (sxhash x) accumulator))
+                     ((zerop length-limit) accumulator)
+                     (t (traverse (sb!int:mix (recurse (car x) 4) accumulator)
+                                  (cdr x) (1- length-limit)))))
+             (recurse (x depthoid) ; depthoid = a blend of level and length
+               (declare (fixnum depthoid))
+               (cond ((atom x) (sxhash x))
+                     ((zerop depthoid)
+                      #.(logand sb!xc:most-positive-fixnum #36Rglobaldbsxhashoid))
+                     (t (sb!int:mix (recurse (car x) (1- depthoid))
+                                    (recurse (cdr x) (1- depthoid)))))))
       (traverse 0 name 10))))
 
 ;;; Given any non-negative integer, return a prime number >= to it.
@@ -324,11 +325,14 @@
 ;;; Clear the information of the specified TYPE and CLASS for NAME in
 ;;; the current environment. Return true if there was any info.
 (defun clear-info (class type name)
-  (let ((info (type-info-or-lose class type)))
-    (clear-info-value name (type-info-number info))))
+  (let* ((info (type-info-or-lose class type))
+         (type-number-list (list (type-info-number info))))
+    (declare (dynamic-extent type-number-list))
+    (clear-info-values name type-number-list)))
 
-(defun clear-info-value (name type)
-  (declare (type type-number type))
+(defun clear-info-values (name type-numbers)
+  (dolist (type type-numbers)
+    (aver (and (typep type 'type-number) (svref *info-types* type))))
   ;; A call to UNCROSS was suspiciously absent, so I added this ERROR
   ;; to be certain that it's not supposed to happen when building the xc.
   #+sb-xc-xhost (error "Strange CLEAR-INFO building the xc: ~S ~S" name type)
@@ -338,7 +342,7 @@
       ;; If PACKED-INFO-REMOVE has nothing to do, it returns NIL,
       ;; corresponding to the input that UPDATE-SYMBOL-INFO expects.
       (dx-flet ((clear-simple (old)
-                  (setq new (packed-info-remove old key2 type))))
+                  (setq new (packed-info-remove old key2 type-numbers))))
         (update-symbol-info key1 #'clear-simple))
       :hairy
       ;; The global hashtable is not imbued with knowledge of the convention
@@ -351,7 +355,7 @@
                   (if old
                       ;; if -REMOVE => nil, then update NEW but return OLD
                       (or (setq new (packed-info-remove
-                                     old +no-auxilliary-key+ type))
+                                     old +no-auxilliary-key+ type-numbers))
                           old))))
         (info-puthash *info-environment* name #'clear-hairy)))
     (not (null new))))
@@ -411,12 +415,31 @@
        (dx-flet ((,proc () ,creation-form))
          (%get-info-value-initializing ,name ,type-number #',proc)))))
 
+;; interface to %ATOMIC-SET-INFO-VALUE
+;; GET-INFO-VALUE-INITIALIZING is a restricted case of this,
+;; and perhaps could be implemented as such.
+;; Atomic update will be important for making the fasloader threadsafe
+;; using a predominantly lock-free design, and other nice things.
+(def!macro atomic-set-info-value (info-class info-type name lambda)
+  (with-unique-names (type-number proc)
+    `(let ((,type-number
+            ,(if (and (keywordp info-type) (keywordp info-class))
+                 (type-info-number (type-info-or-lose info-class info-type))
+                 `(type-info-number
+                   (type-info-or-lose ,info-class ,info-type)))))
+       ,(if (and (listp lambda) (eq (car lambda) 'lambda))
+            ;; rewrite as FLET because the compiler is unable to dxify
+            ;;   (DX-LET ((x (LAMBDA <whatever>))) (F x))
+            (destructuring-bind (lambda-list . body) (cdr lambda)
+              `(dx-flet ((,proc ,lambda-list ,@body))
+                 (%atomic-set-info-value ,name ,type-number #',proc)))
+            `(%atomic-set-info-value ,name ,type-number ,lambda)))))
+
 ;; Call FUNCTION once for each Name in globaldb that has information associated
 ;; with it, passing the function the Name as its only argument.
 ;;
-(defun call-with-each-globaldb-name (function)
-  (let ((name (list nil nil)) ; preallocate just one, and mutate as we go
-        (function (%coerce-callable-to-fun function)))
+(defun call-with-each-globaldb-name (fun-designator)
+  (let ((function (coerce fun-designator 'function)))
     (dolist (package (list-all-packages))
       (do-symbols (symbol package)
         (when (eq (symbol-package symbol) package)
@@ -427,9 +450,9 @@
                 (funcall function symbol))
               ;; Now deal with (<othersym> SYMBOL) names
               (do-packed-info-vector-aux-key (vector key-index)
-                (progn (setf (first name) (svref vector key-index)
-                             (second name) symbol)
-                       (funcall function name))))))))
+                (funcall function
+                         (construct-globaldb-name (svref vector key-index)
+                                                  symbol))))))))
     (info-maphash (lambda (name data)
                     (declare (ignore data))
                     (funcall function name))
@@ -528,6 +551,12 @@
 ;;; This specifies whether this function may be expanded inline. If
 ;;; null, we don't care.
 (define-info-type (:function :inlinep) :type-spec inlinep)
+
+;;; Track how many times IR2 converted a call to this function as a full call
+;;; that was not in the scope of a local or global notinline declaration.
+;;; Useful for finding functions that were supposed to have been converted
+;;; through some kind of transformation but were not.
+(define-info-type (:function :static-full-call-count) :type-spec list)
 
 ;;; a macro-like function which transforms a call to this function
 ;;; into some other Lisp form. This expansion is inhibited if inline
@@ -677,9 +706,8 @@
 
 ;;;; ":DECLARATION" subsection - Data pertaining to user-defined declarations.
 ;; CLTL2 offers an API to provide a list of known declarations, but it is
-;; inefficient to iterate over info environments to find all such declarations,
-;; and this is likely to be even slower when info is attached
-;; directly to symbols, as it would entail do-all-symbols or similar.
+;; inefficient to iterate over all symbols to find ones which have the
+;; (:DECLARATION :RECOGNIZED) info.
 ;; Therefore maintain a list of recognized declarations. This list makes the
 ;; globaldb storage of same redundant, but oh well.
 (defglobal *recognized-declarations* nil)
@@ -753,11 +781,10 @@
        (unless (eq name prev)
          (format t "~&~S" (setq prev name)))
        (let ((type (svref *info-types* type-num)))
-         (format t "~&  ~@[type ~D~]~@[~{~S ~S~}~] ~S = "
+         (format t "~&  ~@[type ~D~]~@[~{~S ~S~}~] = "
                  (if (not type) type-num)
                  (if type
-                     (list (type-info-class type) (type-info-name type)))
-                 name)
+                     (list (type-info-class type) (type-info-name type))))
          (write val :level 1)))
      sym)))
 
@@ -850,6 +877,6 @@
 
   (def clear-info (class type name)
     (let ((info (type-info-or-lose class type)))
-      `(clear-info-value ,name ,(type-info-number info)))))
+      `(clear-info-values ,name '(,(type-info-number info))))))
 
 (!defun-from-collected-cold-init-forms !globaldb-cold-init)

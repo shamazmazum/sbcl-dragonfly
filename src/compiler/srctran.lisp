@@ -134,7 +134,7 @@
     (1 `(cons ,(first args) nil))
     (t (values nil t))))
 
-(defoptimizer (list derive-type) ((&rest args) node)
+(defoptimizer (list derive-type) ((&rest args))
   (if args
       (specifier-type 'cons)
       (specifier-type 'null)))
@@ -2446,6 +2446,7 @@
 
 #+sb-xc-host ; (See CROSS-FLOAT-INFINITY-KLUDGE.)
 (defoptimizer (random derive-type) ((bound &optional state))
+  (declare (ignore state))
   (let ((type (lvar-type bound)))
     (when (numeric-type-p type)
       (let ((class (numeric-type-class type))
@@ -2476,6 +2477,7 @@
 
 #-sb-xc-host ; (See CROSS-FLOAT-INFINITY-KLUDGE.)
 (defoptimizer (random derive-type) ((bound &optional state))
+  (declare (ignore state))
   (one-arg-derive-type bound #'random-derive-type-aux nil))
 
 ;;;; miscellaneous derive-type methods
@@ -2647,6 +2649,7 @@
       `(%deposit-field ,newbyte ,size ,pos ,int))))
 
 (defoptimizer (%ldb derive-type) ((size posn num))
+  (declare (ignore posn num))
   (let ((size (lvar-type size)))
     (if (and (numeric-type-p size)
              (csubtypep size (specifier-type 'integer)))
@@ -2657,6 +2660,7 @@
         *universal-type*)))
 
 (defoptimizer (%mask-field derive-type) ((size posn num))
+  (declare (ignore num))
   (let ((size (lvar-type size))
         (posn (lvar-type posn)))
     (if (and (numeric-type-p size)
@@ -2703,9 +2707,11 @@
                  `(unsigned-byte* ,raw-bit-count)))))))))
 
 (defoptimizer (%dpb derive-type) ((newbyte size posn int))
+  (declare (ignore newbyte))
   (%deposit-field-derive-type-aux size posn int))
 
 (defoptimizer (%deposit-field derive-type) ((newbyte size posn int))
+  (declare (ignore newbyte))
   (%deposit-field-derive-type-aux size posn int))
 
 (deftransform %ldb ((size posn int)
@@ -2764,6 +2770,7 @@
              (logand int (lognot mask)))))
 
 (defoptimizer (mask-signed-field derive-type) ((size x))
+  (declare (ignore x))
   (let ((size (lvar-type size)))
     (if (numeric-type-p size)
         (let ((size-high (numeric-type-high size)))
@@ -3155,6 +3162,7 @@
               )))))))
 
 (defoptimizer (mask-signed-field optimizer) ((width x) node)
+  (declare (ignore width))
   (let ((result-type (single-value-type (node-derived-type node))))
     (multiple-value-bind (low high)
         (integer-type-numeric-bounds result-type)
@@ -3856,6 +3864,14 @@
                     (csubtypep y-type ctype)))))
       (cond
         ((same-leaf-ref-p x y) t)
+        ((and (constant-lvar-p x)
+              (equal (lvar-value x) ""))
+         `(and (stringp y)
+               (zerop (length y))))
+        ((and (constant-lvar-p y)
+              (equal (lvar-value y) ""))
+         `(and (stringp x)
+               (zerop (length x))))
         ((both-csubtypep 'string)
          '(string= x y))
         ((both-csubtypep 'bit-vector)
@@ -3895,6 +3911,14 @@
                     (csubtypep y-type ctype)))))
       (cond
         ((same-leaf-ref-p x y) t)
+        ((and (constant-lvar-p x)
+              (equal (lvar-value x) ""))
+         `(and (stringp y)
+               (zerop (length y))))
+        ((and (constant-lvar-p y)
+              (equal (lvar-value y) ""))
+         `(and (stringp x)
+               (zerop (length x))))
         ((both-csubtypep 'string)
          '(string-equal x y))
         ((both-csubtypep 'bit-vector)
@@ -4196,25 +4220,31 @@
         (associate-args fun `(,fun ,first-arg ,arg) next identity))))
 
 ;;; Reduce constants in ARGS list.
-(declaim (ftype (sfunction (symbol list t symbol) list) reduce-constants))
-(defun reduce-constants (fun args identity one-arg-result-type)
+(declaim (ftype (sfunction (symbol list symbol) list) reduce-constants))
+(defun reduce-constants (fun args one-arg-result-type)
   (let ((one-arg-constant-p (ecase one-arg-result-type
                               (number #'numberp)
                               (integer #'integerp)))
-        (reduced-value identity)
+        (reduced-value)
         (reduced-p nil))
     (collect ((not-constants))
       (dolist (arg args)
-        (if (funcall one-arg-constant-p arg)
-            (setf reduced-value (funcall fun reduced-value arg)
-                  reduced-p t)
-            (not-constants arg)))
+        (let ((value (if (constantp arg)
+                         (constant-form-value arg)
+                         arg)))
+          (cond ((not (funcall one-arg-constant-p value))
+                 (not-constants arg))
+                (reduced-value
+                 (setf reduced-value (funcall fun reduced-value value)
+                       reduced-p t))
+                (t
+                 (setf reduced-value value)))))
       ;; It is tempting to drop constants reduced to identity here,
       ;; but if X is SNaN in (* X 1), we cannot drop the 1.
       (if (not-constants)
           (if reduced-p
               `(,reduced-value ,@(not-constants))
-              (not-constants))
+              args)
           `(,reduced-value)))))
 
 ;;; Do source transformations for transitive functions such as +.
@@ -4231,8 +4261,9 @@
     (0 identity)
     (1 `(,@one-arg-prefixes (the ,one-arg-result-type ,(first args))))
     (2 (values nil t))
-    (t (let ((reduced-args (reduce-constants fun args identity one-arg-result-type)))
-         (associate-args fun (first reduced-args) (rest reduced-args) identity)))))
+    (t
+     (let ((reduced-args (reduce-constants fun args one-arg-result-type)))
+       (associate-args fun (first reduced-args) (rest reduced-args) identity)))))
 
 (define-source-transform + (&rest args)
   (source-transform-transitive '+ args 0))
@@ -4262,9 +4293,10 @@
   (case (length args)
     ((0 2) (values nil t))
     (1 `(,@one-arg-prefixes (the ,one-arg-result-type ,(first args))))
-    (t (let ((reduced-args
-              (reduce-constants fun* (rest args) identity one-arg-result-type)))
-         (associate-args fun (first args) reduced-args identity)))))
+    (t
+     (let ((reduced-args
+             (reduce-constants fun* (rest args) one-arg-result-type)))
+       (associate-args fun (first args) reduced-args identity)))))
 
 (define-source-transform - (&rest args)
   (source-transform-intransitive '- '+ args 0 '(%negate)))
@@ -4479,6 +4511,7 @@
                  :format-arguments (list nargs fun string max))))))))
 
 (defoptimizer (format optimizer) ((dest control &rest args))
+  (declare (ignore dest))
   (when (constant-lvar-p control)
     (let ((x (lvar-value control)))
       (when (stringp x)
@@ -4732,6 +4765,7 @@
                 *universal-type*)))))))
 
 (defoptimizer (compile derive-type) ((nameoid function))
+  (declare (ignore function))
   (when (csubtypep (lvar-type nameoid)
                    (specifier-type 'null))
     (values-specifier-type '(values function boolean boolean))))

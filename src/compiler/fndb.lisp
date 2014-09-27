@@ -98,6 +98,8 @@
 ;;; This is not FLUSHABLE, since it's required to signal an error if
 ;;; unbound.
 (defknown (symbol-value) (symbol) t ())
+(defknown about-to-modify-symbol-value (symbol t &optional t t) null
+  (explicit-check))
 ;;; From CLHS, "If the symbol is globally defined as a macro or a
 ;;; special operator, an object of implementation-dependent nature and
 ;;; identity is returned. If the symbol is not globally defined as
@@ -216,6 +218,9 @@
 (defknown (use-package unuse-package)
   ((or list package-designator) &optional package-designator) (eql t))
 (defknown find-all-symbols (string-designator) list (flushable))
+;; private
+(defknown package-iter-step (fixnum index simple-vector list)
+  (values fixnum index simple-vector list symbol symbol))
 
 ;;;; from the "Numbers" chapter:
 
@@ -400,11 +405,16 @@
 (defknown random ((or (float (0.0)) (integer 1)) &optional random-state)
   (or (float 0.0) (integer 0))
   (explicit-check))
-(defknown make-random-state (&optional
+(defknown make-random-state (&optional (or random-state (member nil t)))
+  random-state (flushable))
+;; The arg type specifier is for documentation only- EXPLICIT-CHECK prevails.
+;; It feels almost wrong to state it at all.
+(defknown seed-random-state (&optional ; SBCL extension
                              (or (member nil t) random-state unsigned-byte
                                  (simple-array (unsigned-byte 8) (*))
                                  (simple-array (unsigned-byte 32) (*))))
-  random-state (flushable))
+  random-state (flushable explicit-check))
+
 (defknown random-state-p (t) boolean (movable foldable flushable))
 
 ;;;; from the "Characters" chapter:
@@ -468,12 +478,12 @@
 (defknown copy-seq (sequence) consed-sequence (flushable)
   :derive-type (sequence-result-nth-arg 1))
 
-(defknown length (sequence) index (foldable flushable dx-safe))
+(defknown length (sequence) index (explicit-check foldable flushable dx-safe))
 
-(defknown reverse (sequence) consed-sequence (flushable)
+(defknown reverse (sequence) consed-sequence (explicit-check flushable)
   :derive-type (sequence-result-nth-arg 1))
 
-(defknown nreverse (sequence) sequence (important-result)
+(defknown nreverse (sequence) sequence (explicit-check important-result)
   :derive-type #'result-type-first-arg
   :destroyed-constant-args (nth-constant-nonempty-sequence-args 1))
 
@@ -630,13 +640,15 @@
                     (:test-not callable) (:start index) (:from-end t)
                     (:end sequence-end) (:key callable))
   (or index null)
-  (foldable flushable call))
+  (foldable flushable call)
+  :derive-type #'position-derive-type)
 
 (defknown (position-if position-if-not)
   (callable sequence &rest t &key (:from-end t) (:start index)
    (:end sequence-end) (:key callable))
   (or index null)
-  (foldable flushable call))
+  (foldable flushable call)
+  :derive-type #'position-derive-type)
 
 (defknown count (t sequence &rest t &key
                    (:test callable) (:test-not callable) (:start index)
@@ -743,14 +755,10 @@
 (defknown make-list (index &key (:initial-element t)) list
   (movable flushable))
 
-(defknown sb!impl::backq-list (&rest t) list (movable flushable))
-(defknown sb!impl::backq-list* (t &rest t) t (movable flushable))
-(defknown sb!impl::backq-append (&rest t) t (flushable))
-(defknown sb!impl::backq-nconc (&rest t) t ()
-  :destroyed-constant-args (remove-non-constants-and-nils #'butlast))
-(defknown sb!impl::backq-cons (t t) cons (foldable movable flushable))
-(defknown sb!impl::backq-vector (list) simple-vector
-    (foldable movable flushable))
+(defknown sb!impl::|List| (&rest t) list (movable flushable foldable))
+(defknown sb!impl::|List*| (t &rest t) t (movable flushable foldable))
+(defknown sb!impl::|Append| (&rest t) t (flushable foldable))
+(defknown sb!impl::|Vector| (&rest t) simple-vector (flushable foldable))
 
 ;;; All but last must be of type LIST, but there seems to be no way to
 ;;; express that in this syntax.
@@ -1783,5 +1791,9 @@
     ())
 (defknown %compare-and-swap-symbol-value (symbol t t) t
     (unwind))
+(defknown (%atomic-dec-symbol-global-value %atomic-inc-symbol-global-value)
+    (symbol fixnum) fixnum)
+(defknown (%atomic-dec-car %atomic-inc-car %atomic-dec-cdr %atomic-inc-cdr)
+    (cons fixnum) fixnum)
 (defknown spin-loop-hint () (values)
     (always-translatable))

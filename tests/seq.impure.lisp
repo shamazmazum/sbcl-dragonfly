@@ -58,6 +58,7 @@
             (coerce base-seq type))
            ((cons (eql simple-array) (cons * (cons (eql 1) null)))
             (destructuring-bind (eltype one) (rest type)
+              (declare (ignore one))
               (when (entirely eltype)
                 (coerce base-seq type))))
            ((cons (eql vector))
@@ -93,22 +94,24 @@
                                 ((speed 0) (space 1))))
           (let ((seq (make-sequence-for-type seq-type))
                 (lambda-expr `(lambda (seq)
+                                (declare (sb-ext:muffle-conditions
+                                          sb-ext:compiler-note))
                                 ,@(when declaredness
                                     `((declare (type ,seq-type seq))))
                                 (declare (optimize ,@optimization))
                                 ,snippet)))
             (when (not seq)
               (return))
-            (format t "~&~S~%" lambda-expr)
+            ;(format t "~&~S~%" lambda-expr)
             (multiple-value-bind (fun warnings-p failure-p)
                 (compile nil lambda-expr)
               (when (or warnings-p failure-p)
                 (error "~@<failed compilation:~2I ~_LAMBDA-EXPR=~S ~_WARNINGS-P=~S ~_FAILURE-P=~S~:@>"
                        lambda-expr warnings-p failure-p))
-              (format t "~&~S ~S~%~S~%~S ~S~%"
-                      base-seq snippet seq-type declaredness optimization)
-              (format t "~&(TYPEP SEQ 'SIMPLE-ARRAY)=~S~%"
-                      (typep seq 'simple-array))
+              ;(format t "~&~S ~S~%~S~%~S ~S~%"
+              ;        base-seq snippet seq-type declaredness optimization)
+              ;(format t "~&(TYPEP SEQ 'SIMPLE-ARRAY)=~S~%"
+              ;        (typep seq 'simple-array))
               (unless (funcall fun seq)
                 (error "~@<failed test:~2I ~_BASE-SEQ=~S ~_SNIPPET=~S ~_SEQ-TYPE=~S ~_DECLAREDNESS=~S ~_OPTIMIZATION=~S~:@>"
                        base-seq
@@ -358,8 +361,8 @@
 
 ;;; As pointed out by Raymond Toy on #lisp IRC, MERGE had some issues
 ;;; with user-defined types until sbcl-0.7.8.11
+(deftype list-typeoid () 'list)
 (with-test (:name :merge-user-types)
- (deftype list-typeoid () 'list)
  (assert (equal '(1 2 3 4) (merge 'list-typeoid (list 1 3) (list 2 4) '<)))
 ;;; and also with types that weren't precicely LIST
  (assert (equal '(1 2 3 4) (merge 'cons (list 1 3) (list 2 4) '<))))
@@ -1157,10 +1160,10 @@
 
 ;;; Both :TEST and :TEST-NOT provided
 (with-test (:name :test-and-test-not-to-adjoin)
-  (let* ((wc 0)
+  (let* ((wc 0) ; warning counter
          (fun
           (handler-bind (((and warning (not style-warning))
-                          (lambda (w) (incf wc))))
+                          (lambda (w) (declare (ignore w)) (incf wc))))
             (compile nil `(lambda (item test test-not) (adjoin item '(1 2 3 :foo)
                                                                :test test
                                                                :test-not test-not))))))
@@ -1181,14 +1184,15 @@
   (dolist (type '(%string %simple-string string-3 simple-string-3))
     (assert (string= "foo" (coerce '(#\f #\o #\o) type)))
     (assert (string= "foo" (map type 'identity #(#\f #\o #\o))))
-    (assert (string= "foo" (merge type '(#\o) '(#\f #\o) 'char<)))
+    (assert (string= "foo" (merge type (copy-seq '(#\o)) (copy-seq '(#\f #\o))
+                                  'char<)))
     (assert (string= "foo" (concatenate type '(#\f) "oo")))
     (assert (string= "ooo" (make-sequence type 3 :initial-element #\o)))))
 (with-test (:name :user-defined-string-types-map-etc-error)
   (dolist (type '(string-3 simple-string-3))
     (assert-error (coerce '(#\q #\u #\u #\x) type))
     (assert-error (map type 'identity #(#\q #\u #\u #\x)))
-    (assert-error (merge type '(#\q #\x) "uu" 'char<))
+    (assert-error (merge type (copy-seq '(#\q #\x)) (copy-seq "uu") 'char<))
     (assert-error (concatenate type "qu" '(#\u #\x)))
     (assert-error (make-sequence type 4 :initial-element #\u))))
 
@@ -1280,5 +1284,16 @@
 
 (with-test (:name (:bit-position :random-test))
   (random-test-bit-position 10000))
+
+;; REVERSE and NREVERSE should assert that the returned value
+;; from a generic sequence operation is of type SEQUENCE.
+(defclass bogus-reversal-seq (sequence standard-object) ())
+(defmethod sequence:reverse ((self bogus-reversal-seq))
+  #2a((x y) (1 2)))
+(with-test (:name :generic-sequence-reverse)
+  (assert-error (reverse (make-instance 'bogus-reversal-seq))))
+
+(with-test (:name :abstract-base-sequence-satisfies-sequencep)
+  (assert (typep (sb-pcl::class-prototype (find-class 'sequence)) 'sequence)))
 
 ;;; success

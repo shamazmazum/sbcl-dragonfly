@@ -268,7 +268,10 @@
 ;;;; the classes that define the kernel of the metabraid
 
 (defclass t () ()
-  (:metaclass built-in-class))
+  ;; AMOP specifies that the class named T should be an instance of
+  ;; BUILT-IN-CLASS, but this conflicts with other specifications in
+  ;; AMOP and CLHS.
+  (:metaclass system-class))
 
 (defclass function (t) ()
   (:metaclass system-class))
@@ -637,7 +640,10 @@
     (unless (and name (eq (find-class name nil) class))
       (error "~@<Can't use anonymous or undefined class as constant: ~S~:@>"
              class))
-    `(find-class ',name)))
+    ;; Essentially we want `(FIND-CLASS ',NAME) but without using backquote.
+    ;; Because this is a delayed DEF!METHOD, its entire body is quoted structure
+    ;; and can't contain a comma object until a MAKE-LOAD-FORM exists for that.
+    (list 'find-class (list 'quote name))))
 
 ;;; The class PCL-CLASS is an implementation-specific common
 ;;; superclass of all specified subclasses of the class CLASS.

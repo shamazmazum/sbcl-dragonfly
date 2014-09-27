@@ -26,7 +26,7 @@
 ;; The lock-free logic differs from each of the preceding reference algorithms.
 ;; The Java algorithm is truly lock-free: death of any thread will never impede
 ;; progress in other threads. The CCL algorithm is only quasi-lock-free, as is
-;; ours. Were a rehashing thread to terminate abnormally whole holding the
+;; ours. Were a rehashing thread to terminate abnormally while holding the
 ;; rehash mutex, all other threads will likely starve at some point.
 ;;
 ;; Unlike the CCL algorithm, we allow reading/writing concurrently with rehash.
@@ -117,8 +117,7 @@
 
 (declaim (inline make-info-forwarding-pointer
                  info-forwarding-pointer-target
-                 info-value-moved-p
-                 increment-count)
+                 info-value-moved-p)
          (ftype (sfunction (t) simple-vector) info-env-rehash)
          (ftype (sfunction (t t) simple-vector) %wait-for-rehash))
 
@@ -422,14 +421,14 @@
 ;;; The inner alist key is a number identifying a type of info.
 ;;; If it were actually an alist, it would look like this:
 ;;;
-;;;  ((nil  (1 . #<fdefn SB-MOP:STANDARD-INSTANCE-ACCESS>) (2 . :FUNCTION) ...)
-;;;   (SETF (1 . #<fdefn (SETF SB-MOP:STANDARD-INSTANCE-ACCESS)>) ...)
-;;;   (CAS  (1 . #<fdefn (CAS SB-MOP:STANDARD-INSTANCE-ACCESS)>) ...)
+;;;  ((nil  (63 . #<fdefn SB-MOP:STANDARD-INSTANCE-ACCESS>) (1 . :FUNCTION) ...)
+;;;   (SETF (63 . #<fdefn (SETF SB-MOP:STANDARD-INSTANCE-ACCESS)>) ...)
+;;;   (CAS  (63 . #<fdefn (CAS SB-MOP:STANDARD-INSTANCE-ACCESS)>) ...)
 ;;;   ...)
 ;;;
 ;;; Note:
 ;;; * The root name is exogenous to the vector - it is not stored.
-;;; * The type-number for (:FUNCTION :DEFINITION) is 1, :KIND is 2, etc.
+;;; * The type-number for (:FUNCTION :DEFINITION) is 63, :KIND is 1, etc.
 ;;; * Names which are lists of length other than 2, or improper lists,
 ;;;   or whose elements are not both symbols, are disqualified.
 
@@ -906,9 +905,8 @@
 ;; While this could determine whether it would do anything before unpacking,
 ;; clearing does not happen often enough to warrant the pre-check.
 ;;
-(defun packed-info-remove (input key2 &rest type-nums)
-  (declare (dynamic-extent type-nums)
-           (simple-vector input))
+(defun packed-info-remove (input key2 type-nums)
+  (declare (simple-vector input))
   (when (or (eql (length input) (length +nil-packed-infos+))
             (and (not (eql key2 +no-auxilliary-key+))
                  (not (info-find-aux-key/packed input key2))))
@@ -952,7 +950,51 @@
             ((eql end 1) +nil-packed-infos+)
             (t (packify-infos new end)))))) ; otherwise repack
 
-;; Call FUNCTION with each piece of symbol in packed VECT using ROOT-SYMBOL
+;; We need a few magic constants to be shared between the next two functions.
+(defconstant-eqx !+pcl-reader-name+ (make-symbol "READER") (constantly t))
+(defconstant-eqx !+pcl-writer-name+ (make-symbol "WRITER") (constantly t))
+(defconstant-eqx !+pcl-boundp-name+ (make-symbol "BOUNDP") (constantly t))
+
+;; PCL names are physically 4-lists (see "pcl/slot-name")
+;; that get treated as 2-component names for globaldb's purposes.
+;; Return the kind of PCL slot accessor name that NAME is, if it is one.
+;; i.e. it matches (SLOT-ACCESSOR :GLOBAL <sym> READER|WRITER|BOUNDP)
+;; When called, NAME is already known to start with 'SLOT-ACCESSOR.
+;; This has to be defined before building PCL.
+(defun pcl-global-accessor-name-p (name)
+  (let* ((cdr (cdr name)) (tail (cdr cdr)) last
+         kind)
+    (if (and (eq (car cdr) :global)
+             (listp tail)
+             (symbolp (car tail))
+             (listp (setq last (cdr tail)))
+             (not (cdr last))
+             ;; Return symbols that can't conflict, in case somebody
+             ;; legitimates (BOUNDP <f>) via DEFINE-FUNCTION-NAME-SYNTAX.
+             ;; Especially important since BOUNDP is an external of CL.
+             (setq kind (case (car last)
+                          (sb!pcl::reader !+pcl-reader-name+)
+                          (sb!pcl::writer !+pcl-writer-name+)
+                          (sb!pcl::boundp !+pcl-boundp-name+))))
+        ;; The first return value is what matters to WITH-GLOBALDB-NAME
+        ;; for deciding whether the name is "simple".
+        ;; Return the KIND first, just in case somehow we end up with
+        ;; (SLOT-ACCESSOR :GLOBAL NIL WRITER) as a name.
+        ;; [It "can't happen" since NIL is a constant though]
+        (values kind (car tail))
+        (values nil nil))))
+
+;; Construct a name from its parts.
+;; For PCL global accessors, produce the real name, not the 2-part name.
+;; This operation is not invoked in normal use of globaldb.
+;; It is only for mapping over all names.
+(defun construct-globaldb-name (aux-symbol stem)
+  (cond ((eq aux-symbol !+pcl-reader-name+) (sb!pcl::slot-reader-name stem))
+        ((eq aux-symbol !+pcl-writer-name+) (sb!pcl::slot-writer-name stem))
+        ((eq aux-symbol !+pcl-boundp-name+) (sb!pcl::slot-boundp-name stem))
+        (t (list aux-symbol stem)))) ; something like (SETF frob)
+
+;; Call FUNCTION with each piece of info in packed VECT using ROOT-SYMBOL
 ;; as the primary name. FUNCTION must accept 3 values (NAME TYPE-NUMBER VALUE).
 (defun %call-with-each-info (function vect root-symbol)
   (let ((name root-symbol)
@@ -963,7 +1005,8 @@
          (dotimes (i (next-field)) ; number of infos for this name
            (funcall function name (next-field) (svref vect (decf data-idx))))
          (if (< desc-idx (decf data-idx))
-             (setq name (list (svref vect data-idx) root-symbol))
+             (setq name
+                   (construct-globaldb-name (svref vect data-idx) root-symbol))
              (return))))))
 
 #|
@@ -1022,9 +1065,10 @@ This is interpreted as
 
 ;; Given a NAME naming a globaldb object, decide whether the NAME has
 ;; an efficient or "simple" form, versus a general or "hairy" form.
-;; The efficient form is either a symbol or a (CONS SYMBOL (CONS SYMBOL NULL)).
+;; The efficient form is either a symbol, a (CONS SYMBOL (CONS SYMBOL NULL)),
+;; or a PCL global slot {reader, writer, boundp} function name.
 ;;
-;; If NAME is a 2-list of symbols, bind KEY2 and KEY1 to the elements
+;; If NAME is "simple", bind KEY2 and KEY1 to the elements
 ;; in that order, and execute the SIMPLE code, otherwise execute the HAIRY code.
 ;; If ALLOW-ATOM is T - the default - then NAME can be just a symbol
 ;; in which case its second component is +NO-AUXILLIARY-KEY+.
@@ -1036,10 +1080,13 @@ This is interpreted as
        (if (or ,@(if allow-atom `((symbolp ,key1)))
                (if (listp ,key1)
                    (let ((,rest (cdr ,key1)))
-                     (when (and (listp ,rest) (not (cdr ,rest)))
-                       (setq ,key2 (car ,key1)
-                             ,key1 (car ,rest))
-                       (and (symbolp ,key1) (symbolp ,key2) ,rest)))))
+                     (when (listp ,rest)
+                       (cond ((not (cdr ,rest))
+                              (setq ,key2 (car ,key1) ,key1 (car ,rest))
+                              (and (symbolp ,key1) (symbolp ,key2) ,rest))
+                             ((eq (car ,key1) 'sb!pcl::slot-accessor)
+                              (multiple-value-setq (,key2 ,key1)
+                                (pcl-global-accessor-name-p ,key1))))))))
            ,simple
            ;; The KEYs remain bound, but they should not be used for anything.
            ,hairy))))
@@ -1116,8 +1163,8 @@ This is interpreted as
 ;;; the cell contents does not affecting the globaldb. In contrast,
 ;;; (INCF (INFO :function :full-calls myname)) would perform poorly.
 ;;;
-;;; See also ATOMICALLY-GET-OR-PUT-SYMBOL-INFO for atomic
-;;; read/modify/write operations.
+;;; See also ATOMIC-SET-INFO-VALUE and GET-INFO-VALUE-INITIALIZING
+;;; for atomic read/modify/write operations.
 ;;;
 ;;; Return the new value so that this can be conveniently used in a
 ;;; SETF function.
@@ -1148,6 +1195,44 @@ This is interpreted as
                              +no-auxilliary-key+)))
           (info-puthash *info-environment* name #'hairy-name)))))
   new-value)
+
+;; Instead of accepting a new-value, call NEW-VALUE-FUN to compute it
+;; from the existing value.  The function receives two arguments:
+;; if there was already a value, that value and T; otherwise two NILs.
+;; Return the newly-computed value. If NEW-VALUE-FUN returns the old value
+;; (compared by EQ) when there was one, then no globaldb update is made.
+(defun %atomic-set-info-value (name type-number new-value-fun)
+  (declare (function new-value-fun))
+  (when (typep name 'fixnum)
+    (error "~D is not a legal INFO name." name))
+  (let ((name (uncross name)) new-value)
+    (dx-flet ((augment (vect aux-key) ; VECT is a packed vector, never NIL
+                (declare (simple-vector vect))
+                (let ((index
+                       (packed-info-value-index vect aux-key type-number)))
+                  (if (not index)
+                      (packed-info-insert
+                       vect aux-key type-number
+                       (setq new-value (funcall new-value-fun nil nil)))
+                      (let ((oldval (svref vect index)))
+                        (setq new-value (funcall new-value-fun oldval t))
+                        (if (eq new-value oldval)
+                            vect ; return the old vector
+                            (let ((copy (copy-seq vect)))
+                              (setf (svref copy index) new-value)
+                              copy)))))))
+      (with-globaldb-name (key1 key2) name
+        :simple
+        ;; UPDATE-SYMBOL-INFO never supplies OLD-INFO as NIL.
+        (dx-flet ((simple-name (old-info) (augment old-info key2)))
+          (update-symbol-info key1 #'simple-name))
+        :hairy
+        ;; INFO-PUTHASH supplies NIL for OLD-INFO if NAME was absent.
+        (dx-flet ((hairy-name (old-info)
+                    (augment (or old-info +nil-packed-infos+)
+                             +no-auxilliary-key+)))
+          (info-puthash *info-environment* name #'hairy-name))))
+    new-value))
 
 ;; %GET-INFO-VALUE-INITIALIZING is provided as a low-level operation similar
 ;; to the above because it does not require info metadata for defaulting,

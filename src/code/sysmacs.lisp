@@ -13,17 +13,17 @@
 
 ;;;; these are initialized in cold init
 
-(defvar *in-without-gcing*)
-(defvar *gc-inhibit*)
+(!defvar *in-without-gcing* nil)
+(!defvar *gc-inhibit* t)
 
 ;;; When the dynamic usage increases beyond this amount, the system
 ;;; notes that a garbage collection needs to occur by setting
 ;;; *GC-PENDING* to T. It starts out as NIL meaning nobody has figured
 ;;; out what it should be yet.
-(defvar *gc-pending*)
+(!defvar *gc-pending* nil)
 
 #!+sb-thread
-(defvar *stop-for-gc-pending*)
+(!defvar *stop-for-gc-pending* nil)
 
 ;;; This one is initialized by the runtime, at thread creation.  On
 ;;; non-x86oid gencgc targets, this is a per-thread list of objects
@@ -182,9 +182,14 @@ maintained."
             (t
              (prog1 (aref %frc-buffer% %frc-index%)
                (incf %frc-index%))))))
-    (if (eq eof-error-p 't)
-        `(truly-the character ,result)
-        result)))
+    (cond ((eq eof-error-p 't)
+           `(truly-the character ,result))
+          ((and (symbolp eof-value) (constantp eof-value)
+                ;; use an EQL specifier only if the const is EQL-comparable
+                (typep (symbol-value eof-value) '(or symbol fixnum)))
+           `(truly-the (or (eql ,(symbol-value eof-value)) character) ,result))
+          (t
+           result))))
 
 ;;;; And these for the fasloader...
 

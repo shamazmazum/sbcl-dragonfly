@@ -49,6 +49,13 @@
   (:generator 2
     (inst rsb res x 0)))
 
+(define-vop (fast-negate/unsigned signed-unop)
+  (:args (x :scs (unsigned-reg) :target res))
+  (:arg-types unsigned-num)
+  (:translate %negate)
+  (:generator 3
+    (inst rsb res x 0)))
+
 (define-vop (fast-lognot/fixnum signed-unop)
   (:args (x :scs (any-reg)))
   (:arg-types tagged-num)
@@ -165,6 +172,28 @@
 (define-binop logandc2 2 bic)
 (define-binop logior 2 orr)
 (define-binop logxor 2 eor)
+
+(define-vop (fast-logior-unsigned-signed=>signed fast-safe-arith-op)
+  (:args (x :scs (unsigned-reg))
+         (y :target r :scs (signed-reg)))
+  (:arg-types unsigned-num signed-num)
+  (:results (r :scs (signed-reg) :from (:argument 1)))
+  (:result-types signed-num)
+  (:note "inline (unsigned-byte 32) arithmetic")
+  (:translate logior)
+  (:generator 3
+    (inst orr r x y)))
+
+(define-vop (fast-logior-signed-unsigned=>signed fast-safe-arith-op)
+  (:args (x :target r :scs (signed-reg))
+         (y :scs (unsigned-reg)))
+  (:arg-types signed-num unsigned-num)
+  (:results (r :scs (signed-reg) :from (:argument 0)))
+  (:result-types signed-num)
+  (:note "inline (unsigned-byte 32) arithmetic")
+  (:translate logior)
+  (:generator 3
+    (inst orr r x y)))
 
 ;;; Multiplication
 

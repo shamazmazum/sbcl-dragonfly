@@ -120,7 +120,7 @@ This is SETFable."
     (dolist (binding (reverse bindings))
       (/show binding)
       (destructuring-bind
-            (symbol type &optional (opt1 nil opt1p) (opt2 nil opt2p))
+          (symbol type &optional opt1 (opt2 nil opt2p))
           binding
         (/show symbol type opt1 opt2)
         (let* ((alien-type (parse-alien-type type env))
@@ -210,11 +210,14 @@ This is SETFable."
 #!-sb-fluid (declaim (freeze-type alien-value))
 (def!method print-object ((value alien-value) stream)
   (print-unreadable-object (value stream)
-    (format stream
+    ;; See identical kludge in host-alieneval.
+    (let ((sb!pretty:*pprint-quote-with-syntactic-sugar* nil))
+      (declare (special sb!pretty:*pprint-quote-with-syntactic-sugar*))
+      (format stream
             "~S ~S #X~8,'0X ~S ~S"
             'alien-value
             :sap (sap-int (alien-value-sap value))
-            :type (unparse-alien-type (alien-value-type value)))))
+            :type (unparse-alien-type (alien-value-type value))))))
 
 #!-sb-fluid (declaim (inline null-alien))
 (defun null-alien (x)

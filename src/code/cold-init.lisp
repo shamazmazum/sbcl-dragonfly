@@ -81,33 +81,28 @@
 
   (/show0 "entering !COLD-INIT")
 
-  ;; FIXME: It'd probably be cleaner to have most of the stuff here
-  ;; handled by calls like !GC-COLD-INIT, !ERROR-COLD-INIT, and
-  ;; !UNIX-COLD-INIT. And *TYPE-SYSTEM-INITIALIZED* could be changed to
-  ;; *TYPE-SYSTEM-INITIALIZED-WHEN-BOUND* so that it doesn't need to
-  ;; be explicitly set in order to be meaningful.
-  (setf *after-gc-hooks* nil
-        *in-without-gcing* nil
-        *gc-inhibit* t
-        *gc-pending* nil
-        #!+sb-thread *stop-for-gc-pending* #!+sb-thread nil
-        *allow-with-interrupts* t
-        sb!unix::*unblock-deferrables-on-enabling-interrupts-p* nil
-        *interrupts-enabled* t
-        *interrupt-pending* nil
-        #!+sb-thruption #!+sb-thruption *thruption-pending* nil
-        *break-on-signals* nil
-        *maximum-error-depth* 10
-        *current-error-depth* 0
-        *cold-init-complete-p* nil
-        *type-system-initialized* nil
-        sb!vm:*alloc-signal* nil
-        sb!kernel::*gc-epoch* (cons nil nil))
-
-  ;; I'm not sure where eval is first called, so I put this first.
-  (show-and-call !eval-cold-init)
-  (show-and-call !deadline-cold-init)
+  ;; Putting data in a synchronized hashtable (*PACKAGE-NAMES*)
+  ;; requires that the main thread be properly initialized.
   (show-and-call thread-init-or-reinit)
+  ;; Printing of symbols requires that packages be filled in, because
+  ;; OUTPUT-SYMBOL calls FIND-SYMBOL to determine accessibility.
+  (show-and-call !package-cold-init)
+  ;; Fill in the printer's character attribute tables now.
+  ;; If Genesis could write constant arrays into a target core,
+  ;; that would be nice, and would tidy up some other things too.
+  (show-and-call !printer-cold-init)
+  #!-win32
+  (progn
+    (setq *error-output* (!make-cold-stderr-stream)
+          *standard-output* *error-output*
+          *trace-output* *error-output*
+          *readtable* (make-readtable)
+          *previous-case* nil
+          *previous-readtable-case* nil
+          *print-length* 6 *print-level* 3)
+    (write-string "COLD-INIT... ")
+    (prin1 `(package = ,(package-name *package*)))
+    (terpri))
 
   ;; Anyone might call RANDOM to initialize a hash value or something;
   ;; and there's nothing which needs to be initialized in order for
@@ -120,16 +115,9 @@
   (show-and-call !character-database-cold-init)
   (show-and-call !character-name-database-cold-init)
 
-  (show-and-call !early-package-cold-init)
-  (show-and-call !package-cold-init)
-
   ;; All sorts of things need INFO and/or (SETF INFO).
   (/show0 "about to SHOW-AND-CALL !GLOBALDB-COLD-INIT")
   (show-and-call !globaldb-cold-init)
-
-  ;; This needs to be done early, but needs to be after INFO is
-  ;; initialized.
-  (show-and-call !fdefn-cold-init)
 
   ;; Various toplevel forms call MAKE-ARRAY, which calls SUBTYPEP, so
   ;; the basic type machinery needs to be initialized before toplevel
@@ -147,12 +135,10 @@
   ;; functions are called in the same relative order as the toplevel
   ;; forms of the corresponding source files.
 
-  ;;(show-and-call !package-cold-init)
   (show-and-call !policy-cold-init-or-resanify)
   (/show0 "back from !POLICY-COLD-INIT-OR-RESANIFY")
 
   (show-and-call !constantp-cold-init)
-  (show-and-call !early-proclaim-cold-init)
   ;; Must be done before toplevel forms are invoked
   ;; because a toplevel defstruct will need to add itself
   ;; to the subclasses of STRUCTURE-OBJECT.
@@ -262,6 +248,7 @@
   (setf *readtable* (copy-readtable *standard-readtable*))
   (setf sb!debug:*debug-readtable* (copy-readtable *standard-readtable*))
   (sb!pretty:!pprint-cold-init)
+  (setq *print-level* nil *print-length* nil) ; restore defaults
 
   ;; the ANSI-specified initial value of *PACKAGE*
   (setf *package* (find-package "COMMON-LISP-USER"))

@@ -1104,9 +1104,24 @@ redefinition."
   ;; NIL is ok, though.
   (eval '(defstruct (typed-struct (:type list) (:predicate nil))
           (a 42 :type fixnum)))
-  ;; So's empty.
-  (eval '(defstruct (typed-struct2 (:type list) (:predicate))
-          (a 42 :type fixnum))))
+
+  ;; (:predicate) is not ok because absence of the argument does not mean
+  ;; that the value of the option is NIL, as it must be for :typed un-:named.
+  ;; ":predicate
+  ;;  This option takes one argument ...
+  ;;  If the argument is not supplied ... the name of the predicate is made
+  ;;  by concatenating the name of the structure to the string "-P"
+  ;;  If the argument is provided and is nil, no predicate is defined.
+  ;;  ... if :type is supplied and :named is not supplied, then :predicate
+  ;;  must either be unsupplied or have the value nil."
+  ;;
+  ;; The last piece says that the entire option must be unsupplied
+  ;; or else "have the value NIL", and is preceded by a description of the
+  ;; precise manner in which absence of an argument is not the same as nil.
+  ;;
+  (assert-error
+   (eval '(defstruct (typed-struct2 (:type list) (:predicate))
+           (a 42 :type fixnum)))))
 
 (with-test (:name (:boa-supplied-p &optional))
   (handler-bind ((warning #'error))
@@ -1186,3 +1201,37 @@ redefinition."
     (assert (= (lexical-default-a (make-lexical-default))
                x
                1))))
+
+(with-test (:name (:defstruct :find-defstruct-description))
+  (assert (null (sb-kernel:find-defstruct-description 'not-foo nil)))
+
+  (assert-error (sb-kernel:find-defstruct-description 'not-foo t)))
+
+(defstruct (a-named-struct :named (:type vector)) a b c)
+(defstruct (a-kid-struct :named (:type vector) (:include a-named-struct)) n)
+(with-test (:name (:defstruct :named-typed-struct-subtype-pred))
+  (let ((par (make-a-named-struct :b 6))
+        (kid (make-a-kid-struct :n 5)))
+    (assert (a-named-struct-p par))
+    (assert (a-named-struct-p kid))
+    (assert (not (a-kid-struct-p par)))
+    (assert (a-kid-struct-p kid))))
+
+(with-test (:name :defstruct-parse-strictly)
+  (dolist (form
+           '((defstruct (s :conc-name (:conc-name b1-)) x y)
+             (defstruct (s :copier :copier) x y)
+             (defstruct (s (:include) (:include)) x y)
+             (defstruct (s (:initial-offset 2) (:initial-offset nil)) x y)
+             (defstruct (s (:predicate nil) (:predicate foolp)) x y)
+             (defstruct (s (:type list) (:type vector)) x y)
+             ;; The :NAMED option requires that SYMBOL be a subtype of the
+             ;; *supplied* element type (not the upgraded element-type).
+             ;; Defining a subtype of the structure places another symbol in
+             ;; the vector, and we can't anticipate what that will be.
+             ;; [Though in practice it is somewhere between unlikely and
+             ;; impossible that an implementation would be able to specialize
+             ;; on only one particular symbol and not also allow any symbol]
+             (defstruct (s (:type (vector (or (eql s) integer))) :named) x y)
+             ))
+    (assert-error (macroexpand form))))

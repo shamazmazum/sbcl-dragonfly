@@ -146,6 +146,7 @@
 ;;; In a bootstrapping situation, we should be careful to use the
 ;;; correct values for the system parameters.
 ;;;
+;;; Meta: the following comment is not true. Should remove the AUX fn.
 ;;; We need an aux function because we need to use both
 ;;; !DEF-VM-SUPPORT-ROUTINE and DEFUN-CACHED.
 (/show0 "primtype.lisp 188")
@@ -156,8 +157,7 @@
 (defun-cached (primitive-type-aux
                :hash-function #'type-hash-value
                :hash-bits 9
-               :values 2
-               :default (values nil :empty))
+               :values 2)
               ((type eq))
   (declare (type ctype type))
   (macrolet ((any () '(values *backend-t-primitive-type* nil))

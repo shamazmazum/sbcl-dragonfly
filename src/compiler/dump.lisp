@@ -121,7 +121,7 @@
 ;;; for either signed or unsigned integers. There's no range checking
 ;;; -- if you don't specify enough bytes for the number to fit, this
 ;;; function cheerfully outputs the low bytes.
-(defun dump-integer-as-n-bytes  (num bytes fasl-output)
+(defun dump-integer-as-n-bytes (num bytes fasl-output)
   (declare (integer num) (type index bytes))
   (declare (type fasl-output fasl-output))
   (do ((n num (ash n -8))
@@ -766,10 +766,21 @@
        #!-sb-unicode
        (bug "how did we get here?"))
       (simple-vector
-       (dump-simple-vector simple-version file)
+       ;; xc-host may upgrade anything to T, so pre-check that it
+       ;; wasn't actually supposed to be a specialized array,
+       ;; and in case a copy was made, tell DUMP-S-V the original type.
+       (cond #+sb-xc-host
+             ((neq (!specialized-array-element-type x) t)
+              (dump-specialized-vector (!specialized-array-element-type x)
+                                       simple-version file))
+             (t
+              (dump-simple-vector simple-version file)))
        (eq-save-object x file))
       (t
-       (dump-specialized-vector simple-version file)
+       ;; Host may have a different specialization, which is ok in itself,
+       ;; but again we might have have copied the vector, losing the type.
+       (dump-specialized-vector
+        #+sb-xc-host (!specialized-array-element-type x) simple-version file)
        (eq-save-object x file)))))
 
 ;;; Dump a SIMPLE-VECTOR, handling any circularities.
@@ -800,8 +811,17 @@
 ;;; we need to be target-endian.  dump-integer-as-n-bytes always writes
 ;;; little-endian (which is correct for all other integers) so for a bigendian
 ;;; target we need to swap octets -- CSR, after DB
+;;; We sanity-check that VECTOR was registered as a specializd array.
+;;; Slight problem: if the host upgraded an array to T and we wanted it
+;;; more specialized, this would be undetected because the check is that
+;;; _if_ the array is specialized, _then_ it must have been registered.
+;;; The reverse is always true. But we wouldn't get here at all for (array T).
+;;; As a practical matter, silent failure is unlikely because
+;;; when building SBCL in SBCL, the needed specializations exist,
+;;; so the sanity-check will be triggered, and we can fix the source.
 #+sb-xc-host
-(defun dump-specialized-vector (vector file &key data-only)
+(defun dump-specialized-vector (element-type vector file
+                                &key data-only) ; basically unused now
   (labels ((octet-swap (word bits)
              "BITS must be a multiple of 8"
              (do ((input word (ash input -8))
@@ -817,22 +837,43 @@
                (dump-integer-as-n-bytes
                 (ecase sb!c:*backend-byte-order*
                   (:little-endian i)
-                  (:big-endian (octet-swap i bits)))
+                  (:big-endian (octet-swap i bits))) ; signed or unsigned OK
                 bytes file))))
-    (etypecase vector
-      ((simple-bit-vector 0)
-       ;; NIL bits+bytes are ok- DUMP-INTEGER-AS-N-BYTES is unreachable.
-       ;; Otherwise we'd need to fill up octets using an ash/logior loop.
-       (dump-unsigned-vector sb!vm:simple-bit-vector-widetag nil nil))
-      ((simple-array (unsigned-byte 8) (*))
-       (dump-unsigned-vector sb!vm:simple-array-unsigned-byte-8-widetag 1 8))
-      ((simple-array (unsigned-byte 16) (*))
-       (dump-unsigned-vector sb!vm:simple-array-unsigned-byte-16-widetag 2 16))
-      ((simple-array (unsigned-byte 32) (*))
-       (dump-unsigned-vector sb!vm:simple-array-unsigned-byte-32-widetag 4 32)))))
+    (cond
+        ((listp element-type)
+         (destructuring-bind (type-id bits) element-type
+           (dump-unsigned-vector
+            (ecase type-id
+              (signed-byte
+               (ecase bits
+                 (8  sb!vm:simple-array-signed-byte-8-widetag)
+                 (16 sb!vm:simple-array-signed-byte-16-widetag)
+                 (32 sb!vm:simple-array-signed-byte-32-widetag)))
+              (unsigned-byte
+               (ecase bits
+                 (8  sb!vm:simple-array-unsigned-byte-8-widetag)
+                 (16 sb!vm:simple-array-unsigned-byte-16-widetag)
+                 (32 sb!vm:simple-array-unsigned-byte-32-widetag))))
+            (/ bits sb!vm:n-byte-bits)
+            bits)))
+        ((typep vector '(simple-bit-vector 0))
+         ;; NIL bits+bytes are ok- DUMP-INTEGER-AS-N-BYTES is unreachable.
+         ;; Otherwise we'd need to fill up octets using an ash/logior loop.
+         (dump-unsigned-vector sb!vm:simple-bit-vector-widetag nil nil))
+        ((and (typep vector '(vector * 0)) data-only)
+         nil) ; empty vector and data-only => nothing to do
+        ((typep vector '(vector (unsigned-byte 8)))
+         ;; FIXME: eliminate this case, falling through to ERROR.
+         (compiler-style-warn
+          "Unportably dumping (ARRAY (UNSIGNED-BYTE 8)) ~S" vector)
+         (dump-unsigned-vector sb!vm:simple-array-unsigned-byte-8-widetag 1 8))
+        (t
+         (error "Won't dump specialized array ~S" vector)))))
 
 #-sb-xc-host
 (defun dump-specialized-vector (vector file &key data-only)
+  ;; The DATA-ONLY option was for the now-obsolete trace-table,
+  ;; but it seems like a good option to keep around.
   (declare (type (simple-unboxed-array (*)) vector))
   (let* ((length (length vector))
          (widetag (%other-pointer-widetag vector))

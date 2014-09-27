@@ -64,6 +64,14 @@
     (move res x)
     (inst neg res)))
 
+(define-vop (fast-negate/unsigned signed-unop)
+  (:args (x :scs (unsigned-reg) :target res))
+  (:arg-types unsigned-num)
+  (:translate %negate)
+  (:generator 3
+    (move res x)
+    (inst neg res)))
+
 (define-vop (fast-lognot/fixnum fixnum-unop)
   (:translate lognot)
   (:generator 1
@@ -229,6 +237,30 @@
        (if (eql y -1) ; special-case "XOR reg, [all-ones]"
            (inst not r)
            (inst xor r y))))))
+
+(define-vop (fast-logior-unsigned-signed=>signed fast-safe-arith-op)
+  (:args (x :scs (unsigned-reg))
+         (y :target r :scs (signed-reg)))
+  (:arg-types unsigned-num signed-num)
+  (:results (r :scs (signed-reg) :from (:argument 1)))
+  (:result-types signed-num)
+  (:note "inline (unsigned-byte 64) arithmetic")
+  (:translate logior)
+  (:generator 3
+    (move r y)
+    (inst or r x)))
+
+(define-vop (fast-logior-signed-unsigned=>signed fast-safe-arith-op)
+  (:args (x :target r :scs (signed-reg))
+         (y :scs (unsigned-reg)))
+  (:arg-types signed-num unsigned-num)
+  (:results (r :scs (signed-reg) :from (:argument 0)))
+  (:result-types signed-num)
+  (:note "inline (unsigned-byte 64) arithmetic")
+  (:translate logior)
+  (:generator 3
+    (move r x)
+    (inst or r y)))
 
 ;;; Special handling of add on the x86; can use lea to avoid a
 ;;; register load, otherwise it uses add.
@@ -1319,13 +1351,8 @@ constant shift greater than word length")))
              `(progn
                 ,@(mapcar
                    (lambda (suffix cost signed)
-                     `(define-vop (;; FIXME: These could be done more
-                                   ;; cleanly with SYMBOLICATE.
-                                   ,(intern (format nil "~:@(FAST-IF-~A~A~)"
-                                                    tran suffix))
-                                   ,(intern
-                                     (format nil "~:@(FAST-CONDITIONAL~A~)"
-                                             suffix)))
+                     `(define-vop (,(symbolicate "FAST-IF-" tran suffix)
+                                   ,(symbolicate "FAST-CONDITIONAL"  suffix))
                         (:translate ,tran)
                         (:conditional ,(if signed cond unsigned))
                         (:generator ,cost

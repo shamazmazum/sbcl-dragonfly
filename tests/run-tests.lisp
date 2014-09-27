@@ -118,7 +118,14 @@
       :output sb-sys:*stdout*
       :input #-win32 devnull #+win32 sb-sys:*stdin*))))
 
+(defun clear-test-status ()
+  (with-open-file (stream "test-status.lisp-expr"
+                          :direction :output
+                          :if-exists :supersede)
+    (write-line "NIL" stream)))
+
 (defun run-impure-in-child-sbcl (test-file test-code)
+  (clear-test-status)
   (run-in-child-sbcl
     `((load "test-util")
       (load "assertoid")
@@ -197,7 +204,19 @@
   (use-package :assertoid))
 
 (defun load-test (file)
-  `(load ,file))
+  ;; KLUDGE: while it may be the case that all test files should be opened
+  ;; as UTF-8, the 'reader' test file is particularly strange because it
+  ;; contains non-UTF-8 bytes, but the character decoding warning was not
+  ;; an intended test. It was happenstance that makes one think
+  ;;  "great! there _is_ a test for character decoding errors
+  ;;   in the file I would expect to find such a test in"
+  ;; except it isn't. A true test would assert something useful,
+  ;; AND not make scary meta-noise, or at least preface it with
+  ;;  ";; Expect warnings from the following test"
+  `(load ,file
+         ,@(if (search "reader.impure" (namestring file))
+               '(:external-format :latin-1))))
+
 
 (defun cload-test (file)
   `(let ((compile-name (compile-file-pathname ,file)))
@@ -210,6 +229,7 @@
 
 (defun sh-test (file)
   ;; What? No SB-POSIX:EXECV?
+  (clear-test-status)
   `(let ((process (sb-ext:run-program "/bin/sh"
                                       (list (native-namestring ,file))
                                       :output *error-output*)))

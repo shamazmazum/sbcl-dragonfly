@@ -226,7 +226,7 @@
                 t
                 (give-up))))))))
 
-(defoptimizer (aref derive-type) ((array &rest indices) node)
+(defoptimizer (aref derive-type) ((array &rest indices))
   (assert-array-rank array (length indices))
   (derive-aref-type array))
 
@@ -236,6 +236,7 @@
 
 (macrolet ((define (name)
              `(defoptimizer (,name derive-type) ((array index))
+                (declare (ignore index))
                 (derive-aref-type array))))
   (define hairy-data-vector-ref)
   (define hairy-data-vector-ref/check-bounds)
@@ -243,10 +244,12 @@
 
 #!+(or x86 x86-64)
 (defoptimizer (data-vector-ref-with-offset derive-type) ((array index offset))
+  (declare (ignore index offset))
   (derive-aref-type array))
 
 (macrolet ((define (name)
              `(defoptimizer (,name derive-type) ((array index new-value))
+                (declare (ignore index))
                 (assert-new-value-type new-value array))))
   (define hairy-data-vector-set)
   (define hairy-data-vector-set/check-bounds)
@@ -254,6 +257,7 @@
 
 #!+(or x86 x86-64)
 (defoptimizer (data-vector-set-with-offset derive-type) ((array index offset new-value))
+  (declare (ignore index offset))
   (assert-new-value-type new-value array))
 
 ;;; Figure out the type of the data vector if we know the argument
@@ -266,8 +270,10 @@
                         (array-type-specialized-element-type atype))
                       (*))))))
 (defoptimizer (%with-array-data derive-type) ((array start end))
+  (declare (ignore start end))
   (derive-%with-array-data/mumble-type array))
 (defoptimizer (%with-array-data/fp derive-type) ((array start end))
+  (declare (ignore start end))
   (derive-%with-array-data/mumble-type array))
 
 (defoptimizer (array-row-major-index derive-type) ((array &rest indices))
@@ -275,9 +281,11 @@
   *universal-type*)
 
 (defoptimizer (row-major-aref derive-type) ((array index))
+  (declare (ignore index))
   (derive-aref-type array))
 
 (defoptimizer (%set-row-major-aref derive-type) ((array index new-value))
+  (declare (ignore index))
   (assert-new-value-type new-value array))
 
 (defun derive-make-array-type (dims element-type adjustable
@@ -362,15 +370,13 @@
 ;; - inline functions whose behavior is merely to call LIST don't work
 ;;   e.g. :INITIAL-CONTENTS (MY-LIST a b) ; where MY-LIST is inline
 ;;                                        ; and effectively just (LIST ...)
-;; - in the current implementation it is only with difficulty that
-;;   backquoted vectors could be used as initializers because BACKQ-VECTOR
-;;   is not the analogous function to VECTOR. (New backq macro fixes that.)
 (defun rewrite-initial-contents (rank initial-contents env)
   (named-let recurse ((rank rank) (data initial-contents))
     (declare (type index rank))
     (if (plusp rank)
         (flet ((sequence-constructor-p (form)
-                 (member (car form) '(list vector sb!impl::backq-list))))
+                 (member (car form) '(sb!impl::|List| list
+                                      sb!impl::|Vector| vector))))
           (let (expanded)
             (cond ((not (listp data)) data)
                   ((sequence-constructor-p data)
@@ -467,7 +473,8 @@
           ;; constant LENGTH.
           ((and initial-contents c-length
                 (lvar-matches initial-contents
-                              :fun-names '(list vector sb!impl::backq-list)
+                              :fun-names '(list vector
+                                           sb!impl::|List| sb!impl::|Vector|)
                               :arg-count c-length))
            (let ((parameters (eliminate-keyword-args
                               call 1 '((:element-type element-type)
@@ -1024,7 +1031,7 @@
                     (the index ,cumulative-offset)))
          (declare (type index ,cumulative-offset))))))
 
-(defun transform-%with-array-data/muble (array node check-fill-pointer)
+(defun transform-%with-array-data/mumble (array node check-fill-pointer)
   (let ((element-type (upgraded-element-type-specifier-or-give-up array))
         (type (lvar-type array))
         (check-bounds (policy node (plusp insert-array-bounds-checks))))
@@ -1064,14 +1071,14 @@
                                 :node node
                                 :policy (> speed space))
   "inline non-SIMPLE-vector-handling logic"
-  (transform-%with-array-data/muble array node nil))
+  (transform-%with-array-data/mumble array node nil))
 (deftransform %with-array-data/fp ((array start end)
                                 ((or vector simple-array) index (or index null) t)
                                 *
                                 :node node
                                 :policy (> speed space))
   "inline non-SIMPLE-vector-handling logic"
-  (transform-%with-array-data/muble array node t))
+  (transform-%with-array-data/mumble array node t))
 
 ;;;; array accessors
 

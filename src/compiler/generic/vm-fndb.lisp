@@ -192,8 +192,14 @@
   ())
 
 
-(defknown allocate-vector ((unsigned-byte 8) index index) (simple-array * (*))
-  (flushable movable))
+(defknown allocate-vector ((unsigned-byte 8) index
+                           ;; The number of words is later converted
+                           ;; to bytes, make sure it fits.
+                           (and index
+                                (unsigned-byte #.(- sb!vm:n-word-bits
+                                                    sb!vm:word-shift))))
+    (simple-array * (*))
+    (flushable movable))
 
 (defknown make-array-header ((unsigned-byte 8) (unsigned-byte 24)) array
   (flushable movable))
